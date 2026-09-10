@@ -33,6 +33,12 @@ test("requests and returns the upstream SSE stream", async () => {
   assert.equal(capturedOptions.headers.Authorization, "Bearer secret-test-key");
   assert.equal(requestBody.model, config.model);
   assert.equal(requestBody.stream, true);
+  assert.equal(requestBody.tool_choice, "auto");
+  assert.equal(requestBody.tool_stream, false);
+  assert.equal(requestBody.tools[0].function.name, "reminder_create");
+  assert.deepEqual(requestBody.tools[0].function.parameters.required, ["title", "dueAt"]);
+  assert.equal(requestBody.messages[0].role, "system");
+  assert.deepEqual(requestBody.messages[1], { role: "user", content: "你好" });
   assert.equal(output, expected);
 });
 

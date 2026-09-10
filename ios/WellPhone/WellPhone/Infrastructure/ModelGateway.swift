@@ -5,11 +5,23 @@ struct ChatPromptMessage: Codable, Equatable, Sendable {
     let content: String
 }
 
+struct ModelToolCall: Equatable, Sendable {
+    let id: String
+    let name: String
+    let arguments: String
+}
+
+enum ModelGatewayEvent: Equatable, Sendable {
+    case textDelta(String)
+    case toolCall(ModelToolCall)
+    case done
+}
+
 protocol ModelGateway: Sendable {
     func streamReply(
         to messages: [ChatPromptMessage],
         conversationID: UUID
-    ) -> AsyncThrowingStream<String, any Error>
+    ) -> AsyncThrowingStream<ModelGatewayEvent, any Error>
 }
 
 /// A deterministic local gateway used while the server-side model proxy is being built.
@@ -19,7 +31,7 @@ struct DemoModelGateway: ModelGateway {
     func streamReply(
         to messages: [ChatPromptMessage],
         conversationID: UUID
-    ) -> AsyncThrowingStream<String, any Error> {
+    ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
         let latestInput = messages.last(where: { $0.role == .user })?.content ?? ""
         let response = responseText(for: latestInput)
 
@@ -29,8 +41,9 @@ struct DemoModelGateway: ModelGateway {
                     for character in response {
                         try Task.checkCancellation()
                         try await Task.sleep(for: .milliseconds(24))
-                        continuation.yield(String(character))
+                        continuation.yield(.textDelta(String(character)))
                     }
+                    continuation.yield(.done)
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish(throwing: CancellationError())

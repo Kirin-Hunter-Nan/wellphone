@@ -6,18 +6,29 @@ import SwiftData
 @Observable
 final class ConversationController {
     var draft = ""
+    private(set) var conversations: [Conversation] = []
     private(set) var messages: [ChatMessage] = []
     private(set) var isGenerating = false
     private(set) var errorMessage: String?
 
     private let modelContext: ModelContext
     private let gateway: any ModelGateway
+    private let taskController: TaskController
     private var conversation: Conversation?
     private var generationTask: Task<Void, Never>?
 
-    init(modelContext: ModelContext, gateway: any ModelGateway) {
+    var activeConversationID: UUID? {
+        conversation?.id
+    }
+
+    init(
+        modelContext: ModelContext,
+        gateway: any ModelGateway,
+        taskController: TaskController
+    ) {
         self.modelContext = modelContext
         self.gateway = gateway
+        self.taskController = taskController
         restoreMostRecentConversation()
     }
 
@@ -70,7 +81,16 @@ final class ConversationController {
         draft = ""
     }
 
+    func selectConversation(_ conversation: Conversation) {
+        guard !isGenerating, conversation.id != activeConversationID else { return }
+        errorMessage = nil
+        draft = ""
+        self.conversation = conversation
+        loadMessages(for: conversation)
+    }
+
     private func startReply(in activeConversation: Conversation) {
+        let sourceMessageID = messages.last(where: { $0.role == .user })?.id
         let prompt = messages.map {
             ChatPromptMessage(role: $0.role, content: $0.text)
         }
@@ -87,12 +107,26 @@ final class ConversationController {
 
         generationTask = Task { [weak self, gateway] in
             do {
-                for try await chunk in gateway.streamReply(
+                for try await event in gateway.streamReply(
                     to: prompt,
                     conversationID: activeConversation.id
                 ) {
                     guard self != nil else { return }
-                    response.text += chunk
+                    switch event {
+                    case .textDelta(let text):
+                        response.text += text
+                    case .toolCall(let call):
+                        guard response.relatedTaskID == nil else { continue }
+                        let task = try self?.taskController.prepareTool(
+                            from: call,
+                            conversationID: activeConversation.id,
+                            sourceMessageID: sourceMessageID
+                        )
+                        response.relatedTaskID = task?.id
+                        response.text = "请确认这项操作"
+                    case .done:
+                        break
+                    }
                 }
 
                 try Task.checkCancellation()
@@ -124,31 +158,28 @@ final class ConversationController {
         let conversation = Conversation(title: title)
         modelContext.insert(conversation)
         self.conversation = conversation
+        conversations.insert(conversation, at: 0)
         return conversation
     }
 
     private func touch(_ conversation: Conversation) {
         conversation.updatedAt = Date()
+        conversations.sort { $0.updatedAt > $1.updatedAt }
     }
 
     private func restoreMostRecentConversation() {
-        var conversationDescriptor = FetchDescriptor<Conversation>(
+        let conversationDescriptor = FetchDescriptor<Conversation>(
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
-        conversationDescriptor.fetchLimit = 1
 
         do {
-            guard let conversation = try modelContext.fetch(conversationDescriptor).first else {
+            conversations = try modelContext.fetch(conversationDescriptor)
+            guard let conversation = conversations.first else {
                 return
             }
 
             self.conversation = conversation
-            let conversationID = conversation.id
-            let messageDescriptor = FetchDescriptor<ChatMessage>(
-                predicate: #Predicate { $0.conversationID == conversationID },
-                sortBy: [SortDescriptor(\.createdAt)]
-            )
-            messages = try modelContext.fetch(messageDescriptor)
+            loadMessages(for: conversation)
 
             if let interruptedMessage = messages.last,
                interruptedMessage.deliveryState == .streaming {
@@ -157,6 +188,21 @@ final class ConversationController {
             }
         } catch {
             errorMessage = "无法读取本地聊天记录。"
+        }
+    }
+
+    private func loadMessages(for conversation: Conversation) {
+        let conversationID = conversation.id
+        let messageDescriptor = FetchDescriptor<ChatMessage>(
+            predicate: #Predicate { $0.conversationID == conversationID },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+
+        do {
+            messages = try modelContext.fetch(messageDescriptor)
+        } catch {
+            messages = []
+            errorMessage = "无法读取这段会话。"
         }
     }
 

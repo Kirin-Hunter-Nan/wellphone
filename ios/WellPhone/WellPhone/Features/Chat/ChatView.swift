@@ -2,34 +2,85 @@ import SwiftUI
 
 struct ChatView: View {
     @Environment(ConversationController.self) private var controller
+    @Environment(TaskController.self) private var taskController
     @FocusState private var isComposerFocused: Bool
+    @State private var isSidebarPresented = false
+    @State private var isTaskCenterPresented = false
 
     var body: some View {
         @Bindable var controller = controller
 
-        NavigationStack {
-            VStack(spacing: 0) {
-                conversation
-                Divider()
-                composer(draft: $controller.draft)
-            }
-            .navigationTitle("WellPhone")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Label("Qwen", systemImage: "sparkles")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("新对话", systemImage: "square.and.pencil") {
-                        controller.startNewConversation()
-                        isComposerFocused = true
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                NavigationStack {
+                    VStack(spacing: 0) {
+                        conversation
+                        Divider()
+                        composer(draft: $controller.draft)
                     }
-                    .disabled(controller.isGenerating)
+                    .navigationTitle("WellPhone")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                isComposerFocused = false
+                                withAnimation(.snappy) {
+                                    isSidebarPresented = true
+                                }
+                            } label: {
+                                Image(systemName: "sidebar.left")
+                                    .overlay(alignment: .topTrailing) {
+                                        if !taskController.activeTasks.isEmpty {
+                                            Circle()
+                                                .fill(Color.red)
+                                                .frame(width: 7, height: 7)
+                                                .offset(x: 4, y: -3)
+                                        }
+                                    }
+                            }
+                            .accessibilityLabel("打开侧边栏")
+                        }
+                    }
+                    .navigationDestination(isPresented: $isTaskCenterPresented) {
+                        TaskCenterView()
+                    }
+                }
+                .disabled(isSidebarPresented)
+
+                if isSidebarPresented {
+                    Color.black.opacity(0.25)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            closeSidebar()
+                        }
+
+                    AppSidebar(
+                        openTasks: {
+                            closeSidebar()
+                            isTaskCenterPresented = true
+                        },
+                        startNewConversation: {
+                            controller.startNewConversation()
+                            closeSidebar()
+                            isComposerFocused = true
+                        },
+                        selectConversation: { conversation in
+                            controller.selectConversation(conversation)
+                            closeSidebar()
+                        }
+                    )
+                    .frame(width: min(330, geometry.size.width * 0.86))
+                    .transition(.move(edge: .leading))
+                    .shadow(color: .black.opacity(0.2), radius: 16, x: 5)
                 }
             }
+            .animation(.snappy, value: isSidebarPresented)
+        }
+    }
+
+    private func closeSidebar() {
+        withAnimation(.snappy) {
+            isSidebarPresented = false
         }
     }
 
@@ -43,10 +94,16 @@ struct ChatView: View {
                     }
 
                     ForEach(controller.messages) { message in
-                        MessageBubble(message: message) {
-                            controller.retryLastResponse()
+                        if let taskID = message.relatedTaskID,
+                           let task = taskController.task(id: taskID) {
+                            ReminderTaskCard(task: task)
+                                .id(message.id)
+                        } else {
+                            MessageBubble(message: message) {
+                                controller.retryLastResponse()
+                            }
+                            .id(message.id)
                         }
-                        .id(message.id)
                     }
 
                     if let errorMessage = controller.errorMessage {
@@ -106,6 +163,98 @@ struct ChatView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(.bar)
+    }
+}
+
+private struct ReminderTaskCard: View {
+    @Environment(TaskController.self) private var controller
+    let task: AgentTask
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: statusIcon)
+                    .foregroundStyle(statusColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("提醒事项")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(task.title)
+                        .font(.headline)
+                }
+                Spacer()
+            }
+
+            if let scheduledAt = task.scheduledAt {
+                Label {
+                    Text(scheduledAt, format: .dateTime.year().month().day().weekday().hour().minute())
+                } icon: {
+                    Image(systemName: "calendar.badge.clock")
+                }
+                .font(.subheadline)
+            }
+
+            if let detail = task.detail {
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            if task.status == .waitingForConfirmation {
+                Text("确认后才会请求系统权限并写入提醒事项。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("取消", role: .cancel) {
+                        controller.cancelTask(taskID: task.id)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+
+                    Button("确认创建") {
+                        Task { await controller.confirmTask(taskID: task.id) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else if task.status.isActive {
+                ProgressView(task.phase.title)
+                    .font(.subheadline)
+            } else if let result = task.resultSummary {
+                Text(result)
+                    .font(.footnote)
+                    .foregroundStyle(task.status == .completed ? .green : .secondary)
+            } else if let error = task.errorMessage {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 48)
+    }
+
+    private var statusIcon: String {
+        switch task.status {
+        case .waitingForConfirmation: "bell.badge"
+        case .created, .running: "clock.arrow.trianglehead.counterclockwise.rotate.90"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        case .cancelled: "xmark.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch task.status {
+        case .waitingForConfirmation: .orange
+        case .created, .running: .accentColor
+        case .completed: .green
+        case .failed: .red
+        case .cancelled: .secondary
+        }
     }
 }
 

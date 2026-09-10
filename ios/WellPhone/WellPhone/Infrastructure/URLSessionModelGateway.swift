@@ -7,10 +7,11 @@ struct URLSessionModelGateway: ModelGateway {
     func streamReply(
         to messages: [ChatPromptMessage],
         conversationID: UUID
-    ) -> AsyncThrowingStream<String, any Error> {
+    ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    var toolCalls: [Int: ToolCallAccumulator] = [:]
                     let request = try makeRequest(
                         messages: messages,
                         conversationID: conversationID
@@ -27,9 +28,24 @@ struct URLSessionModelGateway: ModelGateway {
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
                         switch try QwenStreamDecoder.decode(line: line) {
-                        case .delta(let text):
-                            continuation.yield(text)
+                        case .textDelta(let text):
+                            continuation.yield(.textDelta(text))
+                        case .toolCallDelta(let index, let id, let name, let arguments):
+                            var accumulator = toolCalls[index] ?? ToolCallAccumulator()
+                            if let id, !id.isEmpty { accumulator.id = id }
+                            if let name, !name.isEmpty { accumulator.name = name }
+                            if let arguments { accumulator.arguments += arguments }
+                            toolCalls[index] = accumulator
                         case .done:
+                            for index in toolCalls.keys.sorted() {
+                                guard let call = toolCalls[index], !call.name.isEmpty else { continue }
+                                continuation.yield(.toolCall(ModelToolCall(
+                                    id: call.id,
+                                    name: call.name,
+                                    arguments: call.arguments
+                                )))
+                            }
+                            continuation.yield(.done)
                             continuation.finish()
                             return
                         case .ignored:
@@ -83,6 +99,12 @@ struct URLSessionModelGateway: ModelGateway {
             return .server(statusCode: statusCode, message: "模型代理请求失败。")
         }
     }
+}
+
+private struct ToolCallAccumulator {
+    var id = ""
+    var name = ""
+    var arguments = ""
 }
 
 private struct ChatRequest: Encodable {

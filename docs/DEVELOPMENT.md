@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0 聊天开发中：Qwen 服务端流式代理与 iOS 聊天闭环已完成，百炼真实流式 API 已联调通过，待真机端到端验证 |
+| 当前阶段 | V0.1 最小 Agent 闭环已完成：Qwen 工具调用、参数校验、确认卡片、EventKit 写入、回读验证及任务进度已接通 |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 

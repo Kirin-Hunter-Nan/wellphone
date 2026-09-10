@@ -2,7 +2,7 @@
 
 一个面向 iPhone 的无界面多模态 Agent。用户通过文字、语音、图片或文件下达任务后，可以继续使用当前 App；Agent 在 iOS 允许的后台执行窗口内完成推理、文件处理、系统能力调用和服务 API 操作，全程不抢占屏幕、键盘或输入焦点。
 
-> 当前阶段：V0 聊天开发中。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；聊天 UI、本地历史、停止/重试以及 Qwen 流式代理链路已接通并完成真实 API 联调。
+> 当前阶段：V0.1 最小 Agent 已接通。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Qwen 可生成 `reminder.create` 工具调用，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证，进度同步显示在聊天卡片与任务中心。
 
 ## 核心原则
 
@@ -75,8 +75,10 @@ iOS 客户端从 `ios/WellPhone/WellPhone/Config/AppConfig.json` 读取代理地
 
 API Key 只存在于 `server/.env`，不会进入客户端或 Git。
 
+测试提醒链路时，可以发送“请提醒我明天上午九点带伞”。Qwen 返回的操作会先显示为确认卡片；点击“确认创建”后，App 才会请求提醒事项权限并执行。修改服务端代码后需要重新启动 `npm start`。
+
 ## 项目边界
 
 本项目不是 iOS 跨 App UI 自动化工具。未越狱 iPhone 不支持在后台创建第二套交互式 UI 会话，也不能读取或操纵任意第三方 App。WellPhone 通过系统 Framework、App Intent 和业务 API 完成任务。
 
-详细设计、数据模型、接口约定、测试和实施计划参见 [开发文档](docs/DEVELOPMENT.md)。
+详细设计、数据模型、接口约定、测试和实施计划参见 [开发文档](docs/DEVELOPMENT.md)，Tool 与执行外壳的边界参见 [Runtime Harness](docs/RUNTIME_HARNESS.md)。

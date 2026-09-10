@@ -1,7 +1,8 @@
 import Foundation
 
 enum QwenStreamEvent: Equatable {
-    case delta(String)
+    case textDelta(String)
+    case toolCallDelta(index: Int, id: String?, name: String?, arguments: String?)
     case done
     case ignored
 }
@@ -16,10 +17,19 @@ enum QwenStreamDecoder {
 
         let data = Data(payload.utf8)
         let chunk = try JSONDecoder().decode(StreamChunk.self, from: data)
-        guard let text = chunk.choices.first?.delta.content, !text.isEmpty else {
-            return .ignored
+        guard let delta = chunk.choices.first?.delta else { return .ignored }
+        if let text = delta.content, !text.isEmpty {
+            return .textDelta(text)
         }
-        return .delta(text)
+        if let toolCall = delta.toolCalls?.first {
+            return .toolCallDelta(
+                index: toolCall.index,
+                id: toolCall.id,
+                name: toolCall.function?.name,
+                arguments: toolCall.function?.arguments
+            )
+        }
+        return .ignored
     }
 }
 
@@ -33,4 +43,21 @@ private struct Choice: Decodable {
 
 private struct Delta: Decodable {
     let content: String?
+    let toolCalls: [ToolCallDelta]?
+
+    enum CodingKeys: String, CodingKey {
+        case content
+        case toolCalls = "tool_calls"
+    }
+}
+
+private struct ToolCallDelta: Decodable {
+    let index: Int
+    let id: String?
+    let function: FunctionDelta?
+}
+
+private struct FunctionDelta: Decodable {
+    let name: String?
+    let arguments: String?
 }

@@ -22,16 +22,25 @@ struct ContentView: View {
 private struct PreviewRoot: View {
     private let previewContainer: ModelContainer
     @State private var controller: ConversationController
+    @State private var taskController: TaskController
 
     init() {
-        let schema = Schema([Conversation.self, ChatMessage.self])
+        let schema = Schema([
+            Conversation.self,
+            ChatMessage.self,
+            AgentTask.self,
+            AgentTaskStep.self,
+        ])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try! ModelContainer(for: schema, configurations: [configuration])
+        let taskController = TaskController(modelContext: container.mainContext)
         previewContainer = container
+        _taskController = State(initialValue: taskController)
         _controller = State(
             initialValue: ConversationController(
                 modelContext: container.mainContext,
-                gateway: DemoModelGateway()
+                gateway: DemoModelGateway(),
+                taskController: taskController
             )
         )
     }
@@ -39,6 +48,7 @@ private struct PreviewRoot: View {
     var body: some View {
         ContentView()
             .environment(controller)
+            .environment(taskController)
             .modelContainer(previewContainer)
     }
 }

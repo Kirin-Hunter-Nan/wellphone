@@ -12,11 +12,14 @@ import SwiftData
 struct WellPhoneApp: App {
     private let sharedModelContainer: ModelContainer
     @State private var conversationController: ConversationController
+    @State private var taskController: TaskController
 
     init() {
         let schema = Schema([
             Conversation.self,
             ChatMessage.self,
+            AgentTask.self,
+            AgentTaskStep.self,
         ])
         let isRunningForPreview = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
         let modelConfiguration = ModelConfiguration(
@@ -26,11 +29,14 @@ struct WellPhoneApp: App {
 
         do {
             let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let taskController = TaskController(modelContext: container.mainContext)
             sharedModelContainer = container
+            _taskController = State(initialValue: taskController)
             _conversationController = State(
                 initialValue: ConversationController(
                     modelContext: container.mainContext,
-                    gateway: ModelGatewayFactory.make()
+                    gateway: ModelGatewayFactory.make(),
+                    taskController: taskController
                 )
             )
         } catch {
@@ -42,6 +48,7 @@ struct WellPhoneApp: App {
         WindowGroup {
             ContentView()
                 .environment(conversationController)
+                .environment(taskController)
         }
         .modelContainer(sharedModelContainer)
     }
