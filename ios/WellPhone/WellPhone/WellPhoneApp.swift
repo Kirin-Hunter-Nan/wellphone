@@ -10,22 +10,38 @@ import SwiftData
 
 @main
 struct WellPhoneApp: App {
-    var sharedModelContainer: ModelContainer = {
+    private let sharedModelContainer: ModelContainer
+    @State private var conversationController: ConversationController
+
+    init() {
         let schema = Schema([
-            Item.self,
+            Conversation.self,
+            ChatMessage.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let isRunningForPreview = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: isRunningForPreview
+        )
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            sharedModelContainer = container
+            _conversationController = State(
+                initialValue: ConversationController(
+                    modelContext: container.mainContext,
+                    gateway: ModelGatewayFactory.make()
+                )
+            )
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
-    }()
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(conversationController)
         }
         .modelContainer(sharedModelContainer)
     }
