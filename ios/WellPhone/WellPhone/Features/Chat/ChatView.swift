@@ -75,6 +75,11 @@ struct ChatView: View {
                 }
             }
             .animation(.snappy, value: isSidebarPresented)
+            .onReceive(NotificationCenter.default.publisher(for: .agentTaskNotificationOpened)) { _ in
+                isComposerFocused = false
+                isSidebarPresented = false
+                isTaskCenterPresented = true
+            }
         }
     }
 

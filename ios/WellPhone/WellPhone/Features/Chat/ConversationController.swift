@@ -117,7 +117,7 @@ final class ConversationController {
                         response.text += text
                     case .toolCall(let call):
                         guard response.relatedTaskID == nil else { continue }
-                        let task = try self?.taskController.prepareTool(
+                        let task = try await self?.taskController.prepareTool(
                             from: call,
                             conversationID: activeConversation.id,
                             sourceMessageID: sourceMessageID

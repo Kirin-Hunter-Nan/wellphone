@@ -149,20 +149,27 @@ struct WellPhoneTests {
         let container = try makeContainer()
         let context = container.mainContext
         let executor = FakeReminderExecutor()
-        let controller = TaskController(modelContext: context, reminderExecutor: executor)
+        let notifier = RecordingTaskNotifier()
+        let controller = TaskController(
+            modelContext: context,
+            runtime: .testing(reminderExecutor: executor),
+            notifier: notifier
+        )
         let call = ModelToolCall(
             id: "call_1",
             name: "reminder_create",
             arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
         )
 
-        let task = try controller.prepareTool(
+        let task = try await controller.prepareTool(
             from: call,
             conversationID: UUID(),
             sourceMessageID: UUID()
         )
         #expect(task.status == .waitingForConfirmation)
         #expect(executor.createCount == 0)
+        #expect(notifier.notifications.map(\.kind) == [.authorizationRequired])
+        #expect(notifier.notifications.first?.taskID == task.id)
 
         await controller.confirmTask(taskID: task.id)
 
@@ -171,6 +178,8 @@ struct WellPhoneTests {
         #expect(task.status == .completed)
         #expect(task.phase == .completed)
         #expect(controller.steps(for: task).allSatisfy { $0.status == .completed })
+        #expect(notifier.notifications.map(\.kind) == [.authorizationRequired, .completed])
+        #expect(notifier.notifications.last?.body == task.resultSummary)
     }
 
     @Test @MainActor
@@ -207,14 +216,14 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func cancellingPreparedToolDoesNotExecuteIt() throws {
+    func cancellingPreparedToolDoesNotExecuteIt() async throws {
         let container = try makeContainer()
         let executor = FakeReminderExecutor()
         let controller = TaskController(
             modelContext: container.mainContext,
             reminderExecutor: executor
         )
-        let task = try controller.prepareTool(
+        let task = try await controller.prepareTool(
             from: ModelToolCall(
                 id: "call_1",
                 name: "reminder_create",
@@ -258,5 +267,14 @@ private final class FakeReminderExecutor: ReminderExecuting {
     func verify(_ created: CreatedReminder, matches draft: ReminderDraft) throws -> VerifiedReminder {
         verifyCount += 1
         return VerifiedReminder(listTitle: created.listTitle, identifierDigest: "abc123")
+    }
+}
+
+@MainActor
+private final class RecordingTaskNotifier: TaskNotifying {
+    private(set) var notifications: [AgentTaskNotification] = []
+
+    func post(_ notification: AgentTaskNotification) async {
+        notifications.append(notification)
     }
 }

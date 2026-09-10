@@ -8,6 +8,7 @@ final class TaskController {
     private(set) var tasks: [AgentTask] = []
     private let modelContext: ModelContext
     private let runtime: AgentRuntime
+    private let notifier: any TaskNotifying
 
     var activeTasks: [AgentTask] {
         tasks.filter { $0.status.isActive }
@@ -21,14 +22,23 @@ final class TaskController {
         tasks.filter { !$0.status.isActive && $0.status != .completed }
     }
 
-    init(modelContext: ModelContext, runtime: AgentRuntime) {
+    init(
+        modelContext: ModelContext,
+        runtime: AgentRuntime,
+        notifier: any TaskNotifying
+    ) {
         self.modelContext = modelContext
         self.runtime = runtime
+        self.notifier = notifier
         refresh()
     }
 
     convenience init(modelContext: ModelContext) {
-        self.init(modelContext: modelContext, runtime: .live())
+        self.init(
+            modelContext: modelContext,
+            runtime: .live(),
+            notifier: LocalTaskNotificationCenter.shared
+        )
     }
 
     convenience init(
@@ -37,7 +47,8 @@ final class TaskController {
     ) {
         self.init(
             modelContext: modelContext,
-            runtime: .testing(reminderExecutor: reminderExecutor)
+            runtime: .testing(reminderExecutor: reminderExecutor),
+            notifier: DisabledTaskNotifier()
         )
     }
 
@@ -73,7 +84,7 @@ final class TaskController {
         from call: ModelToolCall,
         conversationID: UUID,
         sourceMessageID: UUID?
-    ) throws -> AgentTask {
+    ) async throws -> AgentTask {
         let request = try runtime.prepare(call: call)
         let prepared = request.task
         let requiresConfirmation = request.descriptor.confirmationPolicy == .always
@@ -124,6 +135,15 @@ final class TaskController {
         taskSteps.forEach(modelContext.insert)
         try modelContext.save()
         tasks.insert(task, at: 0)
+
+        if requiresConfirmation {
+            await notifier.post(AgentTaskNotification(
+                taskID: task.id,
+                kind: .authorizationRequired,
+                title: "任务等待你的确认",
+                body: "“\(task.title)”需要你授权后才能继续。"
+            ))
+        }
         return task
     }
 
@@ -154,6 +174,12 @@ final class TaskController {
             task.progress = 1
             task.resultSummary = verified.summary
             touchAndSave(task)
+            await notifier.post(AgentTaskNotification(
+                taskID: task.id,
+                kind: .completed,
+                title: "任务已完成",
+                body: verified.summary
+            ))
         } catch {
             failRunningStep(for: task)
             task.status = .failed
