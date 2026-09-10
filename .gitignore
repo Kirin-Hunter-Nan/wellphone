@@ -1,0 +1,14 @@
+.DS_Store
+
+# Xcode user and build state
+**/xcuserdata/
+*.xcuserstate
+DerivedData/
+*.xcresult
+
+# Local server secrets and generated files
+.env
+.env.*
+!.env.example
+node_modules/
+coverage/
