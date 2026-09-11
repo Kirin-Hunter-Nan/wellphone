@@ -169,6 +169,10 @@ class TaskCheckpointSubmission(BaseModel):
         alias="lastExecutionErrorMessage",
         max_length=4_000,
     )
+    cancellation_requested_at: datetime | None = Field(
+        default=None,
+        alias="cancellationRequestedAt",
+    )
     occurred_at: datetime = Field(alias="occurredAt")
 
     @model_validator(mode="after")

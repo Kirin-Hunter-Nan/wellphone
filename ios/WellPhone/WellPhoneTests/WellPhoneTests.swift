@@ -391,6 +391,87 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func cancellationDuringRetryDelayPreventsAnotherSystemWrite() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(createErrors: [
+            ReminderToolError.transientSystemFailure("系统服务暂时不可用。")
+        ])
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: executor),
+            notifier: DisabledTaskNotifier(),
+            executionRetryPolicy: ToolExecutionRetryPolicy(
+                maximumAttempts: 3,
+                delayNanoseconds: [5_000_000_000]
+            )
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_cancel_retry",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        let confirmation = Task { @MainActor in
+            await controller.confirmTask(taskID: task.id)
+        }
+        for _ in 0..<1_000 {
+            if task.nextExecutionRetryAt != nil { break }
+            await Task.yield()
+        }
+        #expect(task.nextExecutionRetryAt != nil)
+
+        await controller.cancelTask(taskID: task.id)
+        await confirmation.value
+
+        #expect(executor.createCount == 1)
+        #expect(executor.verifyCount == 0)
+        #expect(task.cancellationRequestedAt != nil)
+        #expect(task.status == .cancelled)
+        #expect(task.resultSummary?.contains("安全停止") == true)
+    }
+
+    @Test @MainActor
+    func cancellationAfterSystemWriteStartsStillVerifiesTheResult() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(createDelayNanoseconds: 200_000_000)
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_cancel_in_flight",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        let confirmation = Task { @MainActor in
+            await controller.confirmTask(taskID: task.id)
+        }
+        for _ in 0..<1_000 {
+            if executor.createCount == 1 { break }
+            await Task.yield()
+        }
+        #expect(executor.createCount == 1)
+
+        await controller.cancelTask(taskID: task.id)
+        await confirmation.value
+
+        #expect(executor.createCount == 1)
+        #expect(executor.verifyCount == 1)
+        #expect(task.cancellationRequestedAt != nil)
+        #expect(task.status == .completed)
+        #expect(task.resultSummary?.contains("系统写入已经完成") == true)
+    }
+
+    @Test @MainActor
     func verifiedToolResultAddsServerFollowUpToChatOnce() async throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -780,13 +861,16 @@ private final class FakeReminderExecutor: ReminderExecuting {
     private(set) var lastIdempotencyKey: String?
     private let recoveredReminder: CreatedReminder?
     private var createErrors: [any Error]
+    private let createDelayNanoseconds: UInt64
 
     init(
         recoveredReminder: CreatedReminder? = nil,
-        createErrors: [any Error] = []
+        createErrors: [any Error] = [],
+        createDelayNanoseconds: UInt64 = 0
     ) {
         self.recoveredReminder = recoveredReminder
         self.createErrors = createErrors
+        self.createDelayNanoseconds = createDelayNanoseconds
     }
 
     func create(
@@ -795,6 +879,9 @@ private final class FakeReminderExecutor: ReminderExecuting {
     ) async throws -> CreatedReminder {
         createCount += 1
         lastIdempotencyKey = idempotencyKey
+        if createDelayNanoseconds > 0 {
+            try await Task<Never, Never>.sleep(nanoseconds: createDelayNanoseconds)
+        }
         if !createErrors.isEmpty {
             throw createErrors.removeFirst()
         }

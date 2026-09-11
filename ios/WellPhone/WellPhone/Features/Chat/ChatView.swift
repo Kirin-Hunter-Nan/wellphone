@@ -282,6 +282,18 @@ private struct ReminderTaskCard: View {
             } else if task.status.isActive {
                 ProgressView(task.phase.title)
                     .font(.subheadline)
+                if task.phase == .executing {
+                    if task.cancellationRequestedAt == nil {
+                        Button("安全停止", role: .destructive) {
+                            Task { await controller.cancelTask(taskID: task.id) }
+                        }
+                        .buttonStyle(.bordered)
+                    } else {
+                        Text("正在安全停止，不会开始新的系统写入。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } else if let result = task.resultSummary {
                 Text(result)
                     .font(.footnote)

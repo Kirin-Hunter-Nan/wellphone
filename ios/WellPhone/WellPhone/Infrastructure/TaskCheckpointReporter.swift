@@ -16,6 +16,7 @@ struct TaskCheckpointReport: Encodable, Equatable, Sendable {
     let executionAttemptCount: Int
     let nextExecutionRetryAt: Date?
     let lastExecutionErrorMessage: String?
+    let cancellationRequestedAt: Date?
     let occurredAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -34,6 +35,7 @@ struct TaskCheckpointReport: Encodable, Equatable, Sendable {
         case executionAttemptCount
         case nextExecutionRetryAt
         case lastExecutionErrorMessage
+        case cancellationRequestedAt
         case occurredAt
     }
 }

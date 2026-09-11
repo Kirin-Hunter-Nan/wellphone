@@ -1,6 +1,6 @@
 [project]
 name = "wellphone-ai-backend"
-version = "0.7.0"
+version = "0.8.0"
 description = "Provider-neutral AI backend for WellPhone"
 requires-python = ">=3.12"
 dependencies = [

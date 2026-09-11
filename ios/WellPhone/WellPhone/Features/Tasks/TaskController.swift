@@ -201,6 +201,11 @@ final class TaskController {
             let receipt = try await executeWithRetry(task)
             persistReceiptAndBeginVerification(receipt, for: task)
             try await verifyAndComplete(task, receipt: receipt)
+        } catch TaskRecoveryError.cancellationRequested {
+            await finishCancellation(
+                task,
+                summary: TaskRecoveryError.cancellationRequested.localizedDescription
+            )
         } catch {
             await fail(task, error: error)
         }
@@ -225,6 +230,11 @@ final class TaskController {
                         receipt: ToolExecutionReceipt(payload: receiptData),
                         reportResultImmediately: false
                     )
+                } catch TaskRecoveryError.cancellationRequested {
+                    await finishCancellation(
+                        task,
+                        summary: TaskRecoveryError.cancellationRequested.localizedDescription
+                    )
                 } catch {
                     await fail(task, error: error, reportResultImmediately: false)
                 }
@@ -236,6 +246,11 @@ final class TaskController {
                         task,
                         receipt: receipt,
                         reportResultImmediately: false
+                    )
+                } catch TaskRecoveryError.cancellationRequested {
+                    await finishCancellation(
+                        task,
+                        summary: TaskRecoveryError.cancellationRequested.localizedDescription
                     )
                 } catch {
                     await fail(task, error: error, reportResultImmediately: false)
@@ -252,15 +267,22 @@ final class TaskController {
     }
 
     func cancelTask(taskID: UUID) async {
-        guard let task = task(id: taskID), task.status == .waitingForConfirmation else { return }
-        completeStep(1, for: task)
-        task.status = .cancelled
-        task.phase = .cancelled
-        task.progress = nil
-        task.resultSummary = "你取消了这次操作，未执行任何系统写入。"
+        guard let task = task(id: taskID) else { return }
+        if task.status == .waitingForConfirmation {
+            completeStep(1, for: task)
+            await finishCancellation(
+                task,
+                summary: "你取消了这次操作，未执行任何系统写入。"
+            )
+            return
+        }
+        guard task.status == .running,
+              task.phase == .executing,
+              task.cancellationRequestedAt == nil else { return }
+        task.cancellationRequestedAt = Date()
+        task.nextExecutionRetryAt = nil
         touchAndSave(task)
         queueCheckpoint(for: task)
-        await queueAndReportResult(for: task)
     }
 
     func flushPendingCheckpoints() async {
@@ -300,6 +322,7 @@ final class TaskController {
             queueCheckpoint(for: task)
         }
 
+        try throwIfCancellationRequested(task)
         guard try runtime.supportsExecutionRetry(task: task) else {
             throw TaskRecoveryError.executionOutcomeUnknown
         }
@@ -309,7 +332,9 @@ final class TaskController {
     private func executeWithRetry(_ task: AgentTask) async throws -> ToolExecutionReceipt {
         let supportsRetry = try runtime.supportsExecutionRetry(task: task)
         while task.executionAttemptCount < executionRetryPolicy.maximumAttempts {
+            try throwIfCancellationRequested(task)
             try await waitForScheduledRetry(task)
+            try throwIfCancellationRequested(task)
             task.executionAttemptCount += 1
             task.nextExecutionRetryAt = nil
             queueCheckpoint(for: task)
@@ -322,6 +347,7 @@ final class TaskController {
                       disposition == .retryable else { throw error }
 
                 task.lastExecutionErrorMessage = error.localizedDescription
+                try throwIfCancellationRequested(task)
                 guard let delay = executionRetryPolicy.delay(
                     afterFailedAttempt: task.executionAttemptCount
                 ) else {
@@ -341,11 +367,21 @@ final class TaskController {
     }
 
     private func waitForScheduledRetry(_ task: AgentTask) async throws {
-        guard let retryAt = task.nextExecutionRetryAt else { return }
-        let remainingSeconds = retryAt.timeIntervalSinceNow
-        guard remainingSeconds > 0 else { return }
-        let nanoseconds = UInt64(remainingSeconds * 1_000_000_000)
-        try await Task<Never, Never>.sleep(nanoseconds: nanoseconds)
+        while let retryAt = task.nextExecutionRetryAt {
+            try throwIfCancellationRequested(task)
+            let remainingSeconds = retryAt.timeIntervalSinceNow
+            guard remainingSeconds > 0 else { return }
+            let slice = min(remainingSeconds, 0.1)
+            try await Task<Never, Never>.sleep(
+                nanoseconds: UInt64(slice * 1_000_000_000)
+            )
+        }
+    }
+
+    private func throwIfCancellationRequested(_ task: AgentTask) throws {
+        guard task.cancellationRequestedAt == nil else {
+            throw TaskRecoveryError.cancellationRequested
+        }
     }
 
     private func step(_ sequence: Int, for task: AgentTask) -> AgentTaskStep? {
@@ -368,6 +404,27 @@ final class TaskController {
         guard let step = steps(for: task).first(where: { $0.status == .running }) else { return }
         step.status = .failed
         step.completedAt = Date()
+    }
+
+    private func cancelRunningStep(for task: AgentTask) {
+        guard let step = steps(for: task).first(where: { $0.status == .running }) else { return }
+        step.status = .cancelled
+        step.completedAt = Date()
+    }
+
+    private func finishCancellation(
+        _ task: AgentTask,
+        summary: String
+    ) async {
+        cancelRunningStep(for: task)
+        task.status = .cancelled
+        task.phase = .cancelled
+        task.progress = nil
+        task.nextExecutionRetryAt = nil
+        task.resultSummary = summary
+        touchAndSave(task)
+        queueCheckpoint(for: task)
+        await queueAndReportResult(for: task)
     }
 
     private func persistReceiptAndBeginVerification(
@@ -394,7 +451,12 @@ final class TaskController {
         task.status = .completed
         task.phase = .completed
         task.progress = 1
-        task.resultSummary = verified.summary
+        if task.cancellationRequestedAt != nil {
+            task.resultSummary = verified.summary
+                + " 取消请求到达时系统写入已经完成，因此仍保留并验证了结果。"
+        } else {
+            task.resultSummary = verified.summary
+        }
         task.errorMessage = nil
         touchAndSave(task)
         queueCheckpoint(for: task)
@@ -508,6 +570,7 @@ final class TaskController {
             executionAttemptCount: task.executionAttemptCount,
             nextExecutionRetryAt: task.nextExecutionRetryAt,
             lastExecutionErrorMessage: task.lastExecutionErrorMessage,
+            cancellationRequestedAt: task.cancellationRequestedAt,
             occurredAt: task.updatedAt
         )
     }
@@ -603,6 +666,7 @@ final class TaskController {
 }
 
 private enum TaskRecoveryError: LocalizedError {
+    case cancellationRequested
     case executionOutcomeUnknown
     case executionRetriesExhausted(lastError: String?)
     case missingExecutionReceipt
@@ -610,6 +674,8 @@ private enum TaskRecoveryError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .cancellationRequested:
+            "任务已按你的请求安全停止，没有开始新的系统写入。"
         case .executionOutcomeUnknown:
             "App 在系统写入阶段中断，无法确认操作结果。为避免重复写入，本次任务不会自动重试。"
         case .executionRetriesExhausted(let lastError):

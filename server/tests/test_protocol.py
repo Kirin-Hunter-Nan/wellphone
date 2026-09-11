@@ -117,3 +117,12 @@ def test_checkpoint_fingerprint_keeps_legacy_zero_attempts_compatible() -> None:
         "lastExecutionErrorMessage": "temporary failure",
     })
     assert retrying.semantic_payload()["executionAttemptCount"] == 1
+
+    stopping = TaskCheckpointSubmission.model_validate({
+        **payload,
+        "executionAttemptCount": 1,
+        "cancellationRequestedAt": "2026-09-11T08:00:30Z",
+    })
+    assert stopping.semantic_payload()["cancellationRequestedAt"] == (
+        "2026-09-11T08:00:30Z"
+    )

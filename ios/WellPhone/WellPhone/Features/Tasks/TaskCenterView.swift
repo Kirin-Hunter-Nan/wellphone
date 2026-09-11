@@ -211,6 +211,21 @@ private struct TaskDetailView: View {
                 }
             }
 
+            if task.status == .running, task.phase == .executing {
+                Section("执行控制") {
+                    if task.cancellationRequestedAt == nil {
+                        Text("停止会阻止尚未开始的重试；已经交给系统的写入仍会回读确认。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button("安全停止任务", role: .destructive) {
+                            Task { await controller.cancelTask(taskID: task.id) }
+                        }
+                    } else {
+                        ProgressView("正在安全停止…")
+                    }
+                }
+            }
+
             if task.status == .waitingForConfirmation {
                 Section("需要确认") {
                     Text("确认后才会请求系统权限并写入提醒事项。")
@@ -268,6 +283,7 @@ private struct TaskDetailView: View {
         case .running: "arrow.trianglehead.2.clockwise.rotate.90"
         case .completed: "checkmark.circle.fill"
         case .failed: "exclamationmark.circle.fill"
+        case .cancelled: "xmark.circle.fill"
         }
     }
 
@@ -277,6 +293,7 @@ private struct TaskDetailView: View {
         case .running: .accentColor
         case .completed: .green
         case .failed: .red
+        case .cancelled: .secondary
         }
     }
 }

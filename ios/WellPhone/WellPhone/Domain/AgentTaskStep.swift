@@ -6,6 +6,7 @@ enum AgentTaskStepStatus: String, Codable, Sendable {
     case running
     case completed
     case failed
+    case cancelled
 }
 
 @Model

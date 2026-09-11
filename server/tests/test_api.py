@@ -652,3 +652,33 @@ def test_rejects_retry_time_outside_running_execution() -> None:
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_accepts_persisted_task_cancellation_request() -> None:
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+    )
+    endpoint = (
+        "/v1/conversations/39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7/task-checkpoints"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(endpoint, json={
+            "requestId": "checkpoint_cancellation_requested",
+            "protocolVersion": "1.0",
+            "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+            "revision": 2,
+            "toolCallId": "call_cancel",
+            "capability": "reminder.create",
+            "status": "running",
+            "phase": "executing",
+            "progress": 0.55,
+            "executionAttemptCount": 1,
+            "cancellationRequestedAt": "2026-09-11T08:00:30Z",
+            "occurredAt": "2026-09-11T08:00:30Z",
+        })
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
