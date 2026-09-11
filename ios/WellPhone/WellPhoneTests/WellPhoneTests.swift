@@ -795,6 +795,38 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func appRestartKeepsTaskWaitingForConfirmation() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_waiting_restart",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        await restoredController.recoverInterruptedTasks()
+
+        #expect(task.status == .waitingForConfirmation)
+        #expect(task.phase == .waitingForConfirmation)
+        #expect(executor.recoverCount == 0)
+        #expect(executor.createCount == 0)
+        #expect(executor.verifyCount == 0)
+        #expect(restoredController.steps(for: task)[1].status == .running)
+    }
+
+    @Test @MainActor
     func appRestartRecoversExistingReminderWithoutRepeatingExecution() async throws {
         let container = try makeContainer()
         let executor = FakeReminderExecutor(recoveredReminder: CreatedReminder(
@@ -841,6 +873,48 @@ struct WellPhoneTests {
 
         await restoredController.flushPendingResultReports()
         #expect(task.resultReportState == .delivered)
+    }
+
+    @Test @MainActor
+    func concurrentRecoveryCallsDoNotRecoverTheSameTaskTwice() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(
+            recoveredReminder: CreatedReminder(
+                identifier: "recovered-once",
+                listTitle: "提醒事项"
+            ),
+            recoverDelayNanoseconds: 100_000_000
+        )
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_concurrent_recovery",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+        task.status = .running
+        task.phase = .executing
+        task.progress = 0.55
+        try container.mainContext.save()
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        async let first: Void = restoredController.recoverInterruptedTasks()
+        async let second: Void = restoredController.recoverInterruptedTasks()
+        _ = await (first, second)
+
+        #expect(executor.recoverCount == 1)
+        #expect(executor.createCount == 0)
+        #expect(executor.verifyCount == 1)
+        #expect(task.status == .completed)
     }
 
     @Test @MainActor
@@ -938,15 +1012,18 @@ private final class FakeReminderExecutor: ReminderExecuting {
     private let recoveredReminder: CreatedReminder?
     private var createErrors: [any Error]
     private let createDelayNanoseconds: UInt64
+    private let recoverDelayNanoseconds: UInt64
 
     init(
         recoveredReminder: CreatedReminder? = nil,
         createErrors: [any Error] = [],
-        createDelayNanoseconds: UInt64 = 0
+        createDelayNanoseconds: UInt64 = 0,
+        recoverDelayNanoseconds: UInt64 = 0
     ) {
         self.recoveredReminder = recoveredReminder
         self.createErrors = createErrors
         self.createDelayNanoseconds = createDelayNanoseconds
+        self.recoverDelayNanoseconds = recoverDelayNanoseconds
     }
 
     func create(
@@ -970,6 +1047,9 @@ private final class FakeReminderExecutor: ReminderExecuting {
     ) async throws -> CreatedReminder? {
         recoverCount += 1
         lastIdempotencyKey = idempotencyKey
+        if recoverDelayNanoseconds > 0 {
+            try await Task<Never, Never>.sleep(nanoseconds: recoverDelayNanoseconds)
+        }
         return recoveredReminder
     }
 

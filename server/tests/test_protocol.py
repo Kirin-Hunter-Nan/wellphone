@@ -144,3 +144,29 @@ def test_checkpoint_fingerprint_keeps_legacy_zero_attempts_compatible() -> None:
             "executionAttemptCount": 1,
             "executionDeadlineAt": "2026-09-11T08:01:00Z",
         })
+
+
+@pytest.mark.parametrize(("status", "phase"), [
+    ("created", "executing"),
+    ("running", "planning"),
+    ("waitingForConfirmation", "verifying"),
+    ("completed", "failed"),
+    ("failed", "completed"),
+    ("cancelled", "executing"),
+])
+def test_rejects_invalid_task_status_phase_combinations(
+    status: str,
+    phase: str,
+) -> None:
+    with pytest.raises(ValidationError, match="does not allow phase"):
+        TaskCheckpointSubmission.model_validate({
+            "requestId": "checkpoint_invalid_state",
+            "protocolVersion": "1.0",
+            "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+            "revision": 1,
+            "toolCallId": "call_123",
+            "capability": "reminder.create",
+            "status": status,
+            "phase": phase,
+            "occurredAt": "2026-09-11T08:00:00Z",
+        })

@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.1 最小 Agent 闭环已完成，V0.2 主要能力已完成：聊天请求、权威对话历史、Tool Result、模型续接和任务检查点由 PostgreSQL 协调；设备端执行凭证、Tool 级幂等标记、Deadline、持久化重试与安全取消支持重启后恢复 |
+| 当前阶段 | V0.2 可恢复任务运行时已于 2026-09-11 完成；下一阶段为 V0.3 多模态输入 |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 
@@ -631,6 +631,8 @@ GET  /v1/integrations/mail/messages/{providerMessageID}
 - 每次 Tool 执行先持久化 Deadline；超时或重启后 Deadline 已过期时先按幂等标记恢复，找不到可验证结果则明确失败，不盲目重放。
 - 执行结果不确定且不支持幂等重试的任务明确失败，不自动重放。
 - 终态结果与最终聊天回复可以在网络恢复后补报。
+
+上述条目已完成实现和自动化验证，详细证据与已知测试环境限制参见 [V0.2 验收记录](V0_2_ACCEPTANCE.md)。上下文裁剪优化与长期记忆不属于本轮迁移范围，后续单独设计。
 
 ### V0.4
 

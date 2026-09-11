@@ -2,7 +2,7 @@
 
 一个面向 iPhone 的无界面多模态 Agent。用户通过文字、语音、图片或文件下达任务后，可以继续使用当前 App；Agent 在 iOS 允许的后台执行窗口内完成推理、文件处理、系统能力调用和服务 API 操作，全程不抢占屏幕、键盘或输入焦点。
 
-> 当前阶段：V0.1 最小 Agent 已接通，V0.2 可恢复运行时的主要能力已完成。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Python AI 后端把 Qwen 工具调用转换为平台无关的 `reminder.create` capability，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证。聊天请求、权威对话历史、真实 Tool Result、模型续接上下文与任务检查点均由 PostgreSQL 协调；设备端持久化系统执行凭证、执行 Deadline 和稳定幂等标记。Runtime 只对已声明幂等且被 Tool 判定为瞬时错误的执行进行最多三次重试；超时后先恢复真实结果而不盲目重放，安全停止也只阻止尚未开始的写入。App 重启后可以继续恢复，不会重复写入。
+> 当前阶段：V0.2 可恢复任务运行时已完成，下一阶段是 V0.3 多模态输入。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Python AI 后端把 Qwen 工具调用转换为平台无关的 `reminder.create` capability，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证。聊天请求、权威对话历史、真实 Tool Result、模型续接上下文与任务检查点均由 PostgreSQL 协调；设备端持久化系统执行凭证、执行 Deadline 和稳定幂等标记。Runtime 只对已声明幂等且被 Tool 判定为瞬时错误的执行进行最多三次重试；超时后先恢复真实结果而不盲目重放，安全停止也只阻止尚未开始的写入。App 重启后可以继续恢复，不会重复写入。
 
 ## 核心原则
 
@@ -100,4 +100,4 @@ API Key 只存在于 `server/.env`，不会进入客户端或 Git。
 
 本项目不是 iOS 跨 App UI 自动化工具。未越狱 iPhone 不支持在后台创建第二套交互式 UI 会话，也不能读取或操纵任意第三方 App。WellPhone 通过系统 Framework、App Intent 和业务 API 完成任务。
 
-详细设计、数据模型、接口约定、测试和实施计划参见 [开发文档](docs/DEVELOPMENT.md)，Tool 与执行外壳的边界参见 [Runtime Harness](docs/RUNTIME_HARNESS.md)。
+详细设计、数据模型、接口约定、测试和实施计划参见 [开发文档](docs/DEVELOPMENT.md)，Tool 与执行外壳的边界参见 [Runtime Harness](docs/RUNTIME_HARNESS.md)，V0.2 的完成范围和验证证据参见 [V0.2 验收记录](docs/V0_2_ACCEPTANCE.md)。

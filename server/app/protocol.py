@@ -181,14 +181,18 @@ class TaskCheckpointSubmission(BaseModel):
 
     @model_validator(mode="after")
     def validate_terminal_phase(self) -> "TaskCheckpointSubmission":
-        required_phase = {
-            "waitingForConfirmation": "waitingForConfirmation",
-            "completed": "completed",
-            "failed": "failed",
-            "cancelled": "cancelled",
-        }.get(self.status)
-        if required_phase is not None and self.phase != required_phase:
-            raise ValueError(f"Task status {self.status} requires phase {required_phase}")
+        allowed_phases = {
+            "created": {"understanding", "planning"},
+            "running": {"executing", "verifying"},
+            "waitingForConfirmation": {"waitingForConfirmation"},
+            "completed": {"completed"},
+            "failed": {"failed"},
+            "cancelled": {"cancelled"},
+        }[self.status]
+        if self.phase not in allowed_phases:
+            raise ValueError(
+                f"Task status {self.status} does not allow phase {self.phase}"
+            )
         if self.next_execution_retry_at is not None and (
             self.status != "running"
             or self.phase != "executing"

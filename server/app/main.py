@@ -86,7 +86,7 @@ def create_app(
 
     application = FastAPI(
         title="WellPhone AI Backend",
-        version="0.9.0",
+        version="0.10.0",
         lifespan=lifespan,
     )
 

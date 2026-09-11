@@ -20,6 +20,8 @@ final class TaskController {
     private let executionRetryPolicy: ToolExecutionRetryPolicy
     private let executionDeadlinePolicy: ToolExecutionDeadlinePolicy
     @ObservationIgnored
+    private var recoveringTaskIDs: Set<UUID> = []
+    @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
     var activeTasks: [AgentTask] {
@@ -217,55 +219,56 @@ final class TaskController {
     func recoverInterruptedTasks() async {
         let interruptedTasks = tasks.filter { $0.status == .running }
         for task in interruptedTasks {
-            switch task.phase {
-            case .verifying:
-                guard let receiptData = task.executionReceiptData else {
-                    await fail(
-                        task,
-                        error: TaskRecoveryError.missingExecutionReceipt,
-                        reportResultImmediately: false
-                    )
-                    continue
-                }
-                do {
-                    try await verifyAndComplete(
-                        task,
-                        receipt: ToolExecutionReceipt(payload: receiptData),
-                        reportResultImmediately: false
-                    )
-                } catch TaskRecoveryError.cancellationRequested {
-                    await finishCancellation(
-                        task,
-                        summary: TaskRecoveryError.cancellationRequested.localizedDescription
-                    )
-                } catch {
-                    await fail(task, error: error, reportResultImmediately: false)
-                }
-            case .executing:
-                do {
-                    let receipt = try await recoverOrExecute(task)
-                    persistReceiptAndBeginVerification(receipt, for: task)
-                    try await verifyAndComplete(
-                        task,
-                        receipt: receipt,
-                        reportResultImmediately: false
-                    )
-                } catch TaskRecoveryError.cancellationRequested {
-                    await finishCancellation(
-                        task,
-                        summary: TaskRecoveryError.cancellationRequested.localizedDescription
-                    )
-                } catch {
-                    await fail(task, error: error, reportResultImmediately: false)
-                }
-            case .understanding, .planning, .waitingForConfirmation,
-                 .completed, .failed, .cancelled:
+            guard recoveringTaskIDs.insert(task.id).inserted else { continue }
+            await recoverInterruptedTask(task)
+            recoveringTaskIDs.remove(task.id)
+        }
+    }
+
+    private func recoverInterruptedTask(_ task: AgentTask) async {
+        switch task.phase {
+        case .verifying:
+            guard let receiptData = task.executionReceiptData else {
                 await fail(
                     task,
-                    error: TaskRecoveryError.invalidInterruptedPhase,
+                    error: TaskRecoveryError.missingExecutionReceipt,
                     reportResultImmediately: false
                 )
+                return
             }
+            do {
+                try await verifyAndComplete(
+                    task,
+                    receipt: ToolExecutionReceipt(payload: receiptData),
+                    reportResultImmediately: false
+                )
+            } catch {
+                await fail(task, error: error, reportResultImmediately: false)
+            }
+        case .executing:
+            do {
+                let receipt = try await recoverOrExecute(task)
+                persistReceiptAndBeginVerification(receipt, for: task)
+                try await verifyAndComplete(
+                    task,
+                    receipt: receipt,
+                    reportResultImmediately: false
+                )
+            } catch TaskRecoveryError.cancellationRequested {
+                await finishCancellation(
+                    task,
+                    summary: TaskRecoveryError.cancellationRequested.localizedDescription
+                )
+            } catch {
+                await fail(task, error: error, reportResultImmediately: false)
+            }
+        case .understanding, .planning, .waitingForConfirmation,
+             .completed, .failed, .cancelled:
+            await fail(
+                task,
+                error: TaskRecoveryError.invalidInterruptedPhase,
+                reportResultImmediately: false
+            )
         }
     }
 
