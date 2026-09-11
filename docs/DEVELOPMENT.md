@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.1 最小 Agent 闭环已完成，V0.2 已启动：聊天请求、权威对话历史、Tool Result 和模型续接均由 PostgreSQL 协调，模型上下文在服务端裁剪 |
+| 当前阶段 | V0.1 最小 Agent 闭环已完成，V0.2 已启动：聊天请求、权威对话历史、Tool Result、模型续接和任务检查点由 PostgreSQL 协调；设备端执行凭证支持重启后安全恢复验证 |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 
@@ -619,6 +619,14 @@ GET  /v1/integrations/mail/messages/{providerMessageID}
 - 未确认或未授权时绝不写入。
 - 创建后完成读回验证。
 - 聊天消息与任务状态分离。
+
+### V0.2
+
+- 关键任务状态通过单调 revision 持久化并同步到 PostgreSQL。
+- 重启后保留等待确认的任务，不绕过用户授权。
+- 已持久化 execution receipt 的任务只恢复验证，不重复系统写入。
+- 执行结果不确定且不支持幂等重试的任务明确失败，不自动重放。
+- 终态结果与最终聊天回复可以在网络恢复后补报。
 
 ### V0.4
 

@@ -497,6 +497,101 @@ struct WellPhoneTests {
         #expect(latestRevision == 4)
     }
 
+    @Test @MainActor
+    func appRestartResumesVerificationFromPersistedExecutionReceipt() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_resume_verification",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+        task.executionReceiptData = try JSONEncoder().encode(CreatedReminder(
+            identifier: "persisted-reminder-id",
+            listTitle: "提醒事项"
+        ))
+        task.status = .running
+        task.phase = .verifying
+        task.progress = 0.82
+        for step in initialController.steps(for: task) {
+            switch step.sequence {
+            case 1, 2:
+                step.status = .completed
+            case 3:
+                step.status = .running
+            default:
+                break
+            }
+        }
+        try container.mainContext.save()
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        await restoredController.recoverInterruptedTasks()
+
+        #expect(executor.createCount == 0)
+        #expect(executor.verifyCount == 1)
+        #expect(task.status == .completed)
+        #expect(task.phase == .completed)
+        #expect(restoredController.steps(for: task).allSatisfy { $0.status == .completed })
+    }
+
+    @Test @MainActor
+    func appRestartDoesNotRepeatAnExecutionWithUnknownOutcome() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_unknown_execution",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+        task.status = .running
+        task.phase = .executing
+        task.progress = 0.55
+        for step in initialController.steps(for: task) {
+            if step.sequence == 1 {
+                step.status = .completed
+            } else if step.sequence == 2 {
+                step.status = .running
+            }
+        }
+        try container.mainContext.save()
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        await restoredController.recoverInterruptedTasks()
+
+        #expect(executor.createCount == 0)
+        #expect(executor.verifyCount == 0)
+        #expect(task.status == .failed)
+        #expect(task.phase == .failed)
+        #expect(task.errorMessage?.contains("不会自动重试") == true)
+        #expect(task.resultReportState == .pending)
+
+        await restoredController.flushPendingResultReports()
+        #expect(task.resultReportState == .delivered)
+    }
+
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema([

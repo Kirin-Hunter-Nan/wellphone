@@ -195,37 +195,49 @@ final class TaskController {
             queueCheckpoint(for: task)
 
             let receipt = try await runtime.execute(task: task)
-            completeStep(2, for: task)
-            startStep(3, for: task)
-            task.phase = .verifying
-            task.progress = 0.82
-            touchAndSave(task)
-            queueCheckpoint(for: task)
-
-            let verified = try runtime.verify(receipt: receipt, for: task)
-            completeStep(3, for: task)
-            task.status = .completed
-            task.phase = .completed
-            task.progress = 1
-            task.resultSummary = verified.summary
-            touchAndSave(task)
-            queueCheckpoint(for: task)
-            await notifier.post(AgentTaskNotification(
-                taskID: task.id,
-                kind: .completed,
-                title: "任务已完成",
-                body: verified.summary
-            ))
-            await queueAndReportResult(for: task)
+            persistReceiptAndBeginVerification(receipt, for: task)
+            try await verifyAndComplete(task, receipt: receipt)
         } catch {
-            failRunningStep(for: task)
-            task.status = .failed
-            task.phase = .failed
-            task.progress = nil
-            task.errorMessage = error.localizedDescription
-            touchAndSave(task)
-            queueCheckpoint(for: task)
-            await queueAndReportResult(for: task)
+            await fail(task, error: error)
+        }
+    }
+
+    func recoverInterruptedTasks() async {
+        let interruptedTasks = tasks.filter { $0.status == .running }
+        for task in interruptedTasks {
+            switch task.phase {
+            case .verifying:
+                guard let receiptData = task.executionReceiptData else {
+                    await fail(
+                        task,
+                        error: TaskRecoveryError.missingExecutionReceipt,
+                        reportResultImmediately: false
+                    )
+                    continue
+                }
+                do {
+                    try await verifyAndComplete(
+                        task,
+                        receipt: ToolExecutionReceipt(payload: receiptData),
+                        reportResultImmediately: false
+                    )
+                } catch {
+                    await fail(task, error: error, reportResultImmediately: false)
+                }
+            case .executing:
+                await fail(
+                    task,
+                    error: TaskRecoveryError.executionOutcomeUnknown,
+                    reportResultImmediately: false
+                )
+            case .understanding, .planning, .waitingForConfirmation,
+                 .completed, .failed, .cancelled:
+                await fail(
+                    task,
+                    error: TaskRecoveryError.invalidInterruptedPhase,
+                    reportResultImmediately: false
+                )
+            }
         }
     }
 
@@ -285,6 +297,63 @@ final class TaskController {
         guard let step = steps(for: task).first(where: { $0.status == .running }) else { return }
         step.status = .failed
         step.completedAt = Date()
+    }
+
+    private func persistReceiptAndBeginVerification(
+        _ receipt: ToolExecutionReceipt,
+        for task: AgentTask
+    ) {
+        task.executionReceiptData = receipt.payload
+        completeStep(2, for: task)
+        startStep(3, for: task)
+        task.phase = .verifying
+        task.progress = 0.82
+        touchAndSave(task)
+        queueCheckpoint(for: task)
+    }
+
+    private func verifyAndComplete(
+        _ task: AgentTask,
+        receipt: ToolExecutionReceipt,
+        reportResultImmediately: Bool = true
+    ) async throws {
+        let verified = try runtime.verify(receipt: receipt, for: task)
+        completeStep(3, for: task)
+        task.status = .completed
+        task.phase = .completed
+        task.progress = 1
+        task.resultSummary = verified.summary
+        task.errorMessage = nil
+        touchAndSave(task)
+        queueCheckpoint(for: task)
+        await notifier.post(AgentTaskNotification(
+            taskID: task.id,
+            kind: .completed,
+            title: "任务已完成",
+            body: verified.summary
+        ))
+        queueResult(for: task)
+        if reportResultImmediately {
+            await reportResult(for: task)
+        }
+    }
+
+    private func fail(
+        _ task: AgentTask,
+        error: any Error,
+        reportResultImmediately: Bool = true
+    ) async {
+        failRunningStep(for: task)
+        task.status = .failed
+        task.phase = .failed
+        task.progress = nil
+        task.errorMessage = error.localizedDescription
+        touchAndSave(task)
+        queueCheckpoint(for: task)
+        queueResult(for: task)
+        if reportResultImmediately {
+            await reportResult(for: task)
+        }
     }
 
     private func touchAndSave(_ task: AgentTask) {
@@ -368,11 +437,15 @@ final class TaskController {
     }
 
     private func queueAndReportResult(for task: AgentTask) async {
+        queueResult(for: task)
+        await reportResult(for: task)
+    }
+
+    private func queueResult(for task: AgentTask) {
         guard task.toolCallID != nil, task.capability != nil else { return }
         task.resultReportState = .pending
         task.resultReportError = nil
         touchAndSave(task)
-        await reportResult(for: task)
     }
 
     private func reportResult(for task: AgentTask) async {
@@ -450,5 +523,22 @@ final class TaskController {
             result: result,
             error: reportError
         )
+    }
+}
+
+private enum TaskRecoveryError: LocalizedError {
+    case executionOutcomeUnknown
+    case missingExecutionReceipt
+    case invalidInterruptedPhase
+
+    var errorDescription: String? {
+        switch self {
+        case .executionOutcomeUnknown:
+            "App 在系统写入阶段中断，无法确认操作结果。为避免重复写入，本次任务不会自动重试。"
+        case .missingExecutionReceipt:
+            "任务已进入验证阶段，但缺少本机执行凭证，无法安全恢复。"
+        case .invalidInterruptedPhase:
+            "任务的中断状态不完整，无法安全恢复。"
+        }
     }
 }

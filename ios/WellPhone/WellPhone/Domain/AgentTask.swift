@@ -69,6 +69,7 @@ final class AgentTask {
     var argumentsJSON: String?
     var resultSummary: String?
     var errorMessage: String?
+    var executionReceiptData: Data?
     var resultReportStateRawValue: String?
     var resultReportError: String?
     var checkpointRevisionValue: Int?
@@ -120,6 +121,7 @@ final class AgentTask {
         argumentsJSON: String? = nil,
         resultSummary: String? = nil,
         errorMessage: String? = nil,
+        executionReceiptData: Data? = nil,
         resultReportState: ToolResultReportState? = nil,
         resultReportError: String? = nil,
         checkpointRevision: Int? = nil,
@@ -143,6 +145,7 @@ final class AgentTask {
         self.argumentsJSON = argumentsJSON
         self.resultSummary = resultSummary
         self.errorMessage = errorMessage
+        self.executionReceiptData = executionReceiptData
         self.resultReportStateRawValue = resultReportState?.rawValue
         self.resultReportError = resultReportError
         self.checkpointRevisionValue = checkpointRevision
