@@ -38,6 +38,12 @@ enum AgentTaskPhase: String, Codable, Sendable, CaseIterable {
     }
 }
 
+enum ToolResultReportState: String, Codable, Sendable {
+    case pending
+    case delivered
+    case conflict
+}
+
 @Model
 final class AgentTask {
     @Attribute(.unique) var id: UUID
@@ -57,6 +63,8 @@ final class AgentTask {
     var argumentsJSON: String?
     var resultSummary: String?
     var errorMessage: String?
+    var resultReportStateRawValue: String?
+    var resultReportError: String?
 
     var status: AgentTaskStatus {
         get { AgentTaskStatus(rawValue: statusRawValue) ?? .failed }
@@ -66,6 +74,11 @@ final class AgentTask {
     var phase: AgentTaskPhase {
         get { AgentTaskPhase(rawValue: phaseRawValue) ?? .failed }
         set { phaseRawValue = newValue.rawValue }
+    }
+
+    var resultReportState: ToolResultReportState? {
+        get { resultReportStateRawValue.flatMap(ToolResultReportState.init(rawValue:)) }
+        set { resultReportStateRawValue = newValue?.rawValue }
     }
 
     init(
@@ -85,7 +98,9 @@ final class AgentTask {
         targetName: String? = nil,
         argumentsJSON: String? = nil,
         resultSummary: String? = nil,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        resultReportState: ToolResultReportState? = nil,
+        resultReportError: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -104,5 +119,7 @@ final class AgentTask {
         self.argumentsJSON = argumentsJSON
         self.resultSummary = resultSummary
         self.errorMessage = errorMessage
+        self.resultReportStateRawValue = resultReportState?.rawValue
+        self.resultReportError = resultReportError
     }
 }

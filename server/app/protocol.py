@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -96,6 +97,44 @@ class ToolRequest(BaseModel):
     tool_call_id: str = Field(alias="toolCallId", min_length=1)
     capability: str = Field(min_length=1)
     arguments: dict[str, object]
+
+
+class ToolResultError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=2_000)
+
+
+class ToolResultSubmission(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    request_id: str = Field(alias="requestId", min_length=1)
+    protocol_version: Literal["1.0"] = Field(alias="protocolVersion")
+    tool_call_id: str = Field(alias="toolCallId", min_length=1)
+    task_id: UUID = Field(alias="taskId")
+    capability: str = Field(min_length=1)
+    status: Literal["verified", "declined", "failed"]
+    result: dict[str, object] | None = None
+    error: ToolResultError | None = None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "ToolResultSubmission":
+        if self.status == "verified" and self.result is None:
+            raise ValueError("A verified Tool result requires result data")
+        if self.status == "failed" and self.error is None:
+            raise ValueError("A failed Tool result requires error data")
+        if self.status != "failed" and self.error is not None:
+            raise ValueError("Only failed Tool results may include error data")
+        return self
+
+    def semantic_payload(self) -> dict[str, object]:
+        return self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"request_id"},
+            exclude_none=True,
+        )
 
 
 def encode_sse(event: dict[str, object]) -> str:

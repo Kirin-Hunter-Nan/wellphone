@@ -202,7 +202,23 @@ private struct TaskDetailView: View {
                     }
 
                     Button("取消任务", role: .destructive) {
-                        controller.cancelTask(taskID: task.id)
+                        Task { await controller.cancelTask(taskID: task.id) }
+                    }
+                }
+            }
+
+            if let reportState = task.resultReportState {
+                Section("服务同步") {
+                    LabeledContent("Tool 结果", value: reportState.title)
+                    if let reportError = task.resultReportError {
+                        Text(reportError)
+                            .font(.footnote)
+                            .foregroundStyle(reportState == .conflict ? .red : .secondary)
+                    }
+                    if reportState == .pending {
+                        Button("重新同步") {
+                            Task { await controller.retryResultReport(taskID: task.id) }
+                        }
                     }
                 }
             }
@@ -241,6 +257,16 @@ private struct TaskDetailView: View {
         case .running: .accentColor
         case .completed: .green
         case .failed: .red
+        }
+    }
+}
+
+private extension ToolResultReportState {
+    var title: String {
+        switch self {
+        case .pending: "等待同步"
+        case .delivered: "已同步"
+        case .conflict: "结果冲突"
         }
     }
 }

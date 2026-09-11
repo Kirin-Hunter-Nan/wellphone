@@ -66,7 +66,7 @@ struct ChatView: View {
                             closeSidebar()
                         }
                     )
-                    .frame(width: min(330, geometry.size.width * 0.86))
+                    .frame(width: min(300, geometry.size.width * 0.78))
                     .transition(.move(edge: .leading))
                     .shadow(color: .black.opacity(0.2), radius: 16, x: 5)
                 }
@@ -268,7 +268,7 @@ private struct ReminderTaskCard: View {
 
                 HStack {
                     Button("取消", role: .cancel) {
-                        controller.cancelTask(taskID: task.id)
+                        Task { await controller.cancelTask(taskID: task.id) }
                     }
                     .buttonStyle(.bordered)
 

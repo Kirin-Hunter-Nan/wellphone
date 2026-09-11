@@ -9,6 +9,7 @@ final class TaskController {
     private let modelContext: ModelContext
     private let runtime: AgentRuntime
     private let notifier: any TaskNotifying
+    private let resultReporter: any ToolResultReporting
 
     var activeTasks: [AgentTask] {
         tasks.filter { $0.status.isActive }
@@ -25,11 +26,13 @@ final class TaskController {
     init(
         modelContext: ModelContext,
         runtime: AgentRuntime,
-        notifier: any TaskNotifying
+        notifier: any TaskNotifying,
+        resultReporter: any ToolResultReporting = DisabledToolResultReporter()
     ) {
         self.modelContext = modelContext
         self.runtime = runtime
         self.notifier = notifier
+        self.resultReporter = resultReporter
         refresh()
     }
 
@@ -37,7 +40,10 @@ final class TaskController {
         self.init(
             modelContext: modelContext,
             runtime: .live(),
-            notifier: LocalTaskNotificationCenter.shared
+            notifier: LocalTaskNotificationCenter.shared,
+            resultReporter: URLSessionToolResultReporter(
+                baseURL: AppConfiguration.modelProxyBaseURL
+            )
         )
     }
 
@@ -48,7 +54,8 @@ final class TaskController {
         self.init(
             modelContext: modelContext,
             runtime: .testing(reminderExecutor: reminderExecutor),
-            notifier: DisabledTaskNotifier()
+            notifier: DisabledTaskNotifier(),
+            resultReporter: DisabledToolResultReporter()
         )
     }
 
@@ -181,6 +188,7 @@ final class TaskController {
                 title: "任务已完成",
                 body: verified.summary
             ))
+            await queueAndReportResult(for: task)
         } catch {
             failRunningStep(for: task)
             task.status = .failed
@@ -188,10 +196,11 @@ final class TaskController {
             task.progress = nil
             task.errorMessage = error.localizedDescription
             touchAndSave(task)
+            await queueAndReportResult(for: task)
         }
     }
 
-    func cancelTask(taskID: UUID) {
+    func cancelTask(taskID: UUID) async {
         guard let task = task(id: taskID), task.status == .waitingForConfirmation else { return }
         completeStep(1, for: task)
         task.status = .cancelled
@@ -199,6 +208,19 @@ final class TaskController {
         task.progress = nil
         task.resultSummary = "你取消了这次操作，未执行任何系统写入。"
         touchAndSave(task)
+        await queueAndReportResult(for: task)
+    }
+
+    func flushPendingResultReports() async {
+        let pendingTasks = tasks.filter { $0.resultReportState == .pending }
+        for task in pendingTasks {
+            await reportResult(for: task)
+        }
+    }
+
+    func retryResultReport(taskID: UUID) async {
+        guard let task = task(id: taskID), task.resultReportState == .pending else { return }
+        await reportResult(for: task)
     }
 
     private func step(_ sequence: Int, for task: AgentTask) -> AgentTaskStep? {
@@ -227,5 +249,69 @@ final class TaskController {
         task.updatedAt = Date()
         try? modelContext.save()
         tasks.sort { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func queueAndReportResult(for task: AgentTask) async {
+        guard task.toolCallID != nil, task.capability != nil else { return }
+        task.resultReportState = .pending
+        task.resultReportError = nil
+        touchAndSave(task)
+        await reportResult(for: task)
+    }
+
+    private func reportResult(for task: AgentTask) async {
+        guard let report = makeResultReport(for: task) else { return }
+
+        do {
+            try await resultReporter.report(report, conversationID: task.conversationID)
+            task.resultReportState = .delivered
+            task.resultReportError = nil
+        } catch let error as ToolResultReporterError where error.isConflict {
+            task.resultReportState = .conflict
+            task.resultReportError = error.localizedDescription
+        } catch {
+            task.resultReportState = .pending
+            task.resultReportError = error.localizedDescription
+        }
+        touchAndSave(task)
+    }
+
+    private func makeResultReport(for task: AgentTask) -> AgentToolResultReport? {
+        guard let toolCallID = task.toolCallID,
+              let capability = task.capability else { return nil }
+
+        let status: AgentToolResultStatus
+        let result: AgentToolResultReport.ResultBody?
+        let reportError: AgentToolResultReport.ErrorBody?
+        switch task.status {
+        case .completed:
+            status = .verified
+            result = .init(summary: task.resultSummary ?? "任务已完成并通过验证。")
+            reportError = nil
+        case .cancelled:
+            status = .declined
+            result = .init(summary: task.resultSummary ?? "用户取消了这次操作。")
+            reportError = nil
+        case .failed:
+            status = .failed
+            result = nil
+            reportError = .init(
+                code: "device_execution_failed",
+                message: task.errorMessage ?? "设备端 Tool 执行失败。"
+            )
+        case .created, .running, .waitingForConfirmation:
+            return nil
+        }
+
+        return AgentToolResultReport(
+            requestID: "tool-result-\(task.id.uuidString.lowercased())",
+            protocolVersion: WellPhoneStreamDecoder.protocolVersion,
+            toolCallID: toolCallID,
+            taskID: task.id,
+            capability: capability,
+            status: status,
+            result: result,
+            error: reportError
+        )
     }
 }

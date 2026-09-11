@@ -21,6 +21,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8787
     max_request_bytes: int = 26_214_400
+    database_url: str = "postgresql://wellphone:wellphone-local-dev@127.0.0.1:5432/wellphone"
 
 
 def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
@@ -45,6 +46,8 @@ def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
             26_214_400,
             "MAX_REQUEST_BYTES",
         ),
+        database_url=environment.get("DATABASE_URL", "").strip()
+        or "postgresql://wellphone:wellphone-local-dev@127.0.0.1:5432/wellphone",
     )
 
 

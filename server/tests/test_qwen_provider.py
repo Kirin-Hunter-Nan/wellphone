@@ -8,11 +8,6 @@ from app.protocol import ChatRequest
 from app.providers.qwen import QwenProvider, UpstreamError
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
 def make_request() -> ChatRequest:
     return ChatRequest.model_validate({
         "requestId": "req_123",

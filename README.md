@@ -46,6 +46,7 @@ flowchart LR
 - 系统能力：PhotoKit、Vision、PDFKit/Core Graphics、EventKit、Keychain、OSLog
 - 网络：URLSession、Background URLSession、OAuth 2.0
 - 服务端：Python 3.12+、FastAPI、Provider Adapter、结构化输出校验、幂等记录
+- 数据库：PostgreSQL 18、Psycopg 3 异步连接池
 - 模型：支持多模态输入、JSON Schema/结构化输出与工具调用的模型
 
 ## 启动 Python AI 后端
@@ -70,6 +71,7 @@ QWEN_MODEL=
 本地开发需要 Python 3.12 或更高版本以及 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
+docker compose up -d postgres
 uv sync
 uv run python -m app
 ```
@@ -82,7 +84,7 @@ docker compose ps
 docker compose logs -f ai-backend
 ```
 
-停止服务时运行 `docker compose down`。Compose 会在运行时读取 `server/.env`，密钥不会复制进镜像；容器以非 root 用户和只读文件系统运行，并通过 `/health` 接受健康检查。
+停止服务时运行 `docker compose down`。Compose 会同时管理 FastAPI 和 PostgreSQL，并等待数据库健康后再启动 API。模型密钥在运行时从 `server/.env` 注入，不会复制进镜像；API 容器以非 root 用户和只读文件系统运行，PostgreSQL 数据保存在 `wellphone-postgres` Docker Volume 中。
 
 iOS 客户端从 `ios/WellPhone/WellPhone/Config/AppConfig.json` 读取代理地址。真机联调时，将服务端 `HOST` 改为 `0.0.0.0`，并把 `modelProxyBaseURL` 改成运行代理的 Mac 局域网地址，例如 `http://192.168.1.20:8787`。该模式仅用于受信任的开发网络；正式部署应使用 HTTPS 和服务端认证。
 

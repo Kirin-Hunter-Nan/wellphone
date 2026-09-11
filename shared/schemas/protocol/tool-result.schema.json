@@ -5,6 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "requestId": { "type": "string", "minLength": 1 },
+    "protocolVersion": { "const": "1.0" },
     "toolCallId": { "type": "string", "minLength": 1 },
     "taskId": { "type": "string", "format": "uuid" },
     "capability": { "type": "string", "minLength": 1 },
@@ -22,5 +24,22 @@
       "required": ["code", "message"]
     }
   },
-  "required": ["toolCallId", "taskId", "capability", "status"]
+  "required": [
+    "requestId",
+    "protocolVersion",
+    "toolCallId",
+    "taskId",
+    "capability",
+    "status"
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "verified" } } },
+      "then": { "required": ["result"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": { "required": ["error"] }
+    }
+  ]
 }

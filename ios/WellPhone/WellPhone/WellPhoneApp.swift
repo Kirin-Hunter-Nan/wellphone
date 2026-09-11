@@ -49,6 +49,9 @@ struct WellPhoneApp: App {
             ContentView()
                 .environment(conversationController)
                 .environment(taskController)
+                .task {
+                    await taskController.flushPendingResultReports()
+                }
         }
         .modelContainer(sharedModelContainer)
     }

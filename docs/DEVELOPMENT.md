@@ -155,7 +155,7 @@ flowchart TB
         Provider["Provider Adapter"]
         Catalog["Tool Catalog"]
         OAuth["OAuth Exchange"]
-        Idempotency["Idempotency Store"]
+        Idempotency["PostgreSQL / Idempotency Store"]
     end
 
     subgraph Models["模型供应商"]
@@ -498,7 +498,15 @@ POST /v1/conversations/{id}/messages
 
 请求包含 `protocolVersion`、`requestId`、设备 locale/time zone、文本、历史摘要和附件引用。前台聊天通过 WellPhone SSE 事件接收 `assistant.delta`、`tool.requested` 和完成状态；模型厂商的流式格式必须在 Python Provider Adapter 内终止。后台任务应优先使用普通请求或可恢复的服务端 Job，避免依赖长连接。
 
-### 12.2 计划
+### 12.2 Tool 结果
+
+```text
+POST /v1/conversations/{id}/tool-results
+```
+
+iOS 在 Tool 完成验证、用户取消或执行失败后提交 `verified`、`declined` 或 `failed`。服务端以 `(conversation_id, tool_call_id)` 作为 PostgreSQL 唯一键：完全相同的重试返回成功，不同结果返回 `409 tool_result_conflict`。网络失败不回滚手机端已经完成的真实操作，客户端保留待同步状态并在下次启动时重试。
+
+### 12.3 计划
 
 ```text
 POST /v1/tasks/{id}/plan
@@ -506,7 +514,7 @@ POST /v1/tasks/{id}/plan
 
 返回通过 JSON Schema 校验的 `AgentPlan`。
 
-### 12.3 外部服务操作
+### 12.4 外部服务操作
 
 ```text
 POST /v1/integrations/mail/send

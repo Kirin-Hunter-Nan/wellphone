@@ -3,7 +3,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.protocol import ChatRequest, assistant_delta, encode_sse
+from app.protocol import (
+    ChatRequest,
+    ToolResultSubmission,
+    assistant_delta,
+    encode_sse,
+)
 
 
 def valid_request() -> dict[str, object]:
@@ -62,3 +67,22 @@ def test_encodes_provider_neutral_sse() -> None:
         "responseId": "resp_123",
         "text": "你好",
     }
+
+
+def test_validates_tool_result_outcomes() -> None:
+    verified = ToolResultSubmission.model_validate({
+        "requestId": "result_123",
+        "protocolVersion": "1.0",
+        "toolCallId": "call_123",
+        "taskId": "39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7",
+        "capability": "reminder.create",
+        "status": "verified",
+        "result": {"summary": "提醒事项已创建并验证。"},
+    })
+    assert verified.result is not None
+
+    invalid = verified.model_dump(mode="json", by_alias=True)
+    invalid["status"] = "failed"
+    invalid.pop("result")
+    with pytest.raises(ValidationError, match="requires error data"):
+        ToolResultSubmission.model_validate(invalid)

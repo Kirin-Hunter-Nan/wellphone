@@ -189,10 +189,12 @@ struct WellPhoneTests {
         let context = container.mainContext
         let executor = FakeReminderExecutor()
         let notifier = RecordingTaskNotifier()
+        let resultReporter = RecordingToolResultReporter()
         let controller = TaskController(
             modelContext: context,
             runtime: .testing(reminderExecutor: executor),
-            notifier: notifier
+            notifier: notifier,
+            resultReporter: resultReporter
         )
         let request = AgentToolRequest(
             id: "call_1",
@@ -220,6 +222,11 @@ struct WellPhoneTests {
         #expect(controller.steps(for: task).allSatisfy { $0.status == .completed })
         #expect(notifier.notifications.map(\.kind) == [.authorizationRequired, .completed])
         #expect(notifier.notifications.last?.body == task.resultSummary)
+        #expect(task.resultReportState == .delivered)
+        let reports = await resultReporter.reports
+        #expect(reports.count == 1)
+        #expect(reports.first?.result.toolCallID == "call_1")
+        #expect(reports.first?.result.status == .verified)
     }
 
     @Test @MainActor
@@ -272,11 +279,43 @@ struct WellPhoneTests {
             sourceMessageID: UUID()
         )
 
-        controller.cancelTask(taskID: task.id)
+        await controller.cancelTask(taskID: task.id)
 
         #expect(task.status == .cancelled)
         #expect(executor.createCount == 0)
         #expect(executor.verifyCount == 0)
+    }
+
+    @Test @MainActor
+    func pendingToolResultRetriesWithoutChangingVerifiedTask() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let reporter = FailOnceToolResultReporter()
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: executor),
+            notifier: DisabledTaskNotifier(),
+            resultReporter: reporter
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_retry",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.confirmTask(taskID: task.id)
+        #expect(task.status == .completed)
+        #expect(task.resultReportState == .pending)
+
+        await controller.flushPendingResultReports()
+        #expect(task.status == .completed)
+        #expect(task.resultReportState == .delivered)
+        let attemptCount = await reporter.attemptCount
+        #expect(attemptCount == 2)
     }
 
     @MainActor
@@ -315,6 +354,36 @@ private final class RecordingTaskNotifier: TaskNotifying {
 
     func post(_ notification: AgentTaskNotification) async {
         notifications.append(notification)
+    }
+}
+
+private actor RecordingToolResultReporter: ToolResultReporting {
+    struct CapturedReport: Sendable {
+        let result: AgentToolResultReport
+        let conversationID: UUID
+    }
+
+    private(set) var reports: [CapturedReport] = []
+
+    func report(
+        _ result: AgentToolResultReport,
+        conversationID: UUID
+    ) async throws {
+        reports.append(CapturedReport(result: result, conversationID: conversationID))
+    }
+}
+
+private actor FailOnceToolResultReporter: ToolResultReporting {
+    private(set) var attemptCount = 0
+
+    func report(
+        _ result: AgentToolResultReport,
+        conversationID: UUID
+    ) async throws {
+        attemptCount += 1
+        if attemptCount == 1 {
+            throw URLError(.notConnectedToInternet)
+        }
     }
 }
 
