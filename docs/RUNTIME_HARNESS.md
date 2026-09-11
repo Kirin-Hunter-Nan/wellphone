@@ -20,6 +20,8 @@ Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式�
 
 每轮聊天请求也受运行外壳保护。iOS 将稳定的 `requestId` 保存到发起该轮回复的用户消息中，重试时复用；Python 服务端以 PostgreSQL 租约领取请求并保存完整 WellPhone SSE 事件。断流清理独立于 HTTP 请求的取消域，短暂并发由客户端按 `Retry-After` 自动重试。完成后的重复请求只回放原始事件，不重复访问模型。回放中的 Tool Call 在客户端按 `(conversationID, toolCallID)` 去重，因此不会产生第二张任务卡片。
 
+PostgreSQL 中的 chat request 同时是服务端权威会话历史。服务端只在 conversation 第一次迁移时导入客户端携带的旧消息；后续轮次使用已保存的 user 输入、已生成的 assistant 内容以及 Tool continuation 最终回复重建上下文，并在 Provider 调用前执行消息数和字符数双重裁剪。SwiftData 继续负责本机 UI 与离线展示，但不再决定模型看到的旧历史。
+
 模型发起 Tool Call 时，Provider Adapter 会先把厂商专属的续接上下文作为 opaque JSON 保存到 PostgreSQL，再向 Swift 客户端发送平台无关的 `tool.requested`。设备端完成最终状态后，通过 `tool-results` 将 `verified / declined / failed` 回传服务端；服务端以原始 Tool Call、真实执行结果续接模型，并将最终回复返回聊天窗口。
 
 结果先在 SwiftData 标记为待同步，再由 PostgreSQL 使用 `(conversation_id, tool_call_id)` 幂等接收。最终模型回复也绑定到同一个键：网络重试复用已保存的回复，不重复调用模型，也不在聊天窗口重复插入消息。回传或续接失败不得改变设备端已经验证的真实执行结果。

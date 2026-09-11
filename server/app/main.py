@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from contextvars import Context
+import json
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -63,7 +64,7 @@ def create_app(
 
     application = FastAPI(
         title="WellPhone AI Backend",
-        version="0.4.0",
+        version="0.5.0",
         lifespan=lifespan,
     )
 
@@ -129,12 +130,42 @@ def create_app(
                 },
             )
 
+        try:
+            provider_request = await active_chat_store.contextualize(
+                conversation_id,
+                chat_request,
+                max_messages=active_settings.conversation_context_messages,
+                max_characters=active_settings.conversation_context_characters,
+            )
+        except Exception:
+            await active_chat_store.fail(
+                conversation_id,
+                chat_request.request_id,
+                "conversation_history_unavailable",
+            )
+            return _error(
+                503,
+                "conversation_history_unavailable",
+                "暂时无法读取对话上下文，请稍后重试。",
+            )
+
         async def save_tool_call_context(context: ProviderToolCallContext) -> None:
-            await active_store.save_tool_call_context(conversation_id, context)
+            await active_store.save_tool_call_context(
+                conversation_id,
+                ProviderToolCallContext(
+                    tool_call_id=context.tool_call_id,
+                    capability=context.capability,
+                    provider=context.provider,
+                    state={
+                        **context.state,
+                        "_wellphoneRequestId": chat_request.request_id,
+                    },
+                ),
+            )
 
         try:
             stream = await active_provider.open_reply(
-                chat_request,
+                provider_request,
                 on_tool_call=save_tool_call_context,
             )
         except ProviderError:
@@ -169,6 +200,7 @@ def create_app(
                         conversation_id,
                         chat_request,
                         tuple(events),
+                        _assistant_content(events),
                     )
                 )
             except BaseException:
@@ -202,6 +234,7 @@ def create_app(
             return _error(400, "invalid_request", _validation_message(error))
 
         active_store: ToolResultStore = request.app.state.result_store
+        active_chat_store: ChatRequestStore = request.app.state.chat_request_store
         context = await active_store.get_tool_call_context(
             conversation_id,
             submission.tool_call_id,
@@ -278,6 +311,15 @@ def create_app(
                 "assistant_reply_missing",
                 "Completed Tool continuation has no assistant reply",
             )
+        source_request_id = context.state.get("_wellphoneRequestId")
+        if isinstance(source_request_id, str):
+            await _finish_store_operation(
+                active_chat_store.save_assistant_reply(
+                    conversation_id,
+                    source_request_id,
+                    existing_reply,
+                )
+            )
         return {
             "accepted": True,
             "duplicate": not inserted,
@@ -298,6 +340,24 @@ async def _finish_store_operation(operation: Awaitable[None]) -> None:
         # Starlette cancels the whole request scope after a client disconnects.
         # The detached task must be allowed to commit after this coroutine exits.
         return
+
+
+def _assistant_content(events: list[str]) -> str | None:
+    chunks: list[str] = []
+    for event in events:
+        for line in event.splitlines():
+            if not line.startswith("data:"):
+                continue
+            try:
+                payload = json.loads(line[5:].strip())
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "assistant.delta":
+                text = payload.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+    content = "".join(chunks).strip()
+    return content or None
 
 
 def _validation_message(error: ValidationError) -> str:

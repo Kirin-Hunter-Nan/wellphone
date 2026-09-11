@@ -2,7 +2,7 @@
 
 一个面向 iPhone 的无界面多模态 Agent。用户通过文字、语音、图片或文件下达任务后，可以继续使用当前 App；Agent 在 iOS 允许的后台执行窗口内完成推理、文件处理、系统能力调用和服务 API 操作，全程不抢占屏幕、键盘或输入焦点。
 
-> 当前阶段：V0.1 最小 Agent 已接通，并已进入 V0.2 可恢复运行时建设。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Python AI 后端把 Qwen 工具调用转换为平台无关的 `reminder.create` capability，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证。聊天请求、真实 Tool Result 与模型续接上下文均由 PostgreSQL 幂等协调，断线重试不会重复调用模型或创建重复任务卡片。
+> 当前阶段：V0.1 最小 Agent 已接通，并已进入 V0.2 可恢复运行时建设。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Python AI 后端把 Qwen 工具调用转换为平台无关的 `reminder.create` capability，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证。聊天请求、权威对话历史、真实 Tool Result 与模型续接上下文均由 PostgreSQL 协调，断线重试不会重复调用模型或创建重复任务卡片，模型上下文由服务端统一裁剪。
 
 ## 核心原则
 
@@ -45,7 +45,7 @@ flowchart LR
 - iOS：Swift 6、SwiftUI、Swift Concurrency、SwiftData、App Intents、BackgroundTasks
 - 系统能力：PhotoKit、Vision、PDFKit/Core Graphics、EventKit、Keychain、OSLog
 - 网络：URLSession、Background URLSession、OAuth 2.0
-- 服务端：Python 3.12+、FastAPI、Provider Adapter、结构化输出校验、请求租约与响应回放
+- 服务端：Python 3.12+、FastAPI、Provider Adapter、结构化输出校验、请求租约、权威会话历史与响应回放
 - 数据库：PostgreSQL 18、Psycopg 3 异步连接池
 - 模型：支持多模态输入、JSON Schema/结构化输出与工具调用的模型
 

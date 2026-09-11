@@ -27,6 +27,7 @@ class FakeStream:
 class FakeProvider:
     def __init__(self) -> None:
         self.request: ChatRequest | None = None
+        self.requests: list[ChatRequest] = []
         self.open_count = 0
         self.continuation_count = 0
 
@@ -38,6 +39,7 @@ class FakeProvider:
     ) -> FakeStream:
         del on_tool_call
         self.request = request
+        self.requests.append(request)
         self.open_count += 1
         return FakeStream()
 
@@ -76,9 +78,30 @@ class FailOnceOpenProvider(FakeProvider):
     ) -> FakeStream:
         del on_tool_call
         self.request = request
+        self.requests.append(request)
         self.open_count += 1
         if self.open_count == 1:
             raise ProviderError(502, "temporary failure")
+        return FakeStream()
+
+
+class ToolContextProvider(FakeProvider):
+    async def open_reply(
+        self,
+        request: ChatRequest,
+        *,
+        on_tool_call: ToolCallContextSink | None = None,
+    ) -> FakeStream:
+        self.request = request
+        self.requests.append(request)
+        self.open_count += 1
+        if self.open_count == 1 and on_tool_call is not None:
+            await on_tool_call(ProviderToolCallContext(
+                tool_call_id="call_history",
+                capability="reminder.create",
+                provider="fake",
+                state={"messages": [], "toolName": "reminder_create"},
+            ))
         return FakeStream()
 
 
@@ -168,6 +191,106 @@ def test_replays_completed_chat_request_without_calling_provider_again() -> None
     assert provider.open_count == 1
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "chat_request_conflict"
+
+
+def test_provider_uses_server_owned_conversation_history() -> None:
+    provider = FakeProvider()
+    chat_store = InMemoryChatRequestStore()
+    app = create_app(
+        settings=settings(),
+        provider=provider,
+        result_store=InMemoryToolResultStore(),
+        chat_request_store=chat_store,
+    )
+    endpoint = "/v1/conversations/69fcd9e0-e03e-4ed9-a22e-b92079c15a44/messages"
+    context = {
+        "locale": "zh-CN",
+        "timeZone": "Asia/Shanghai",
+        "capabilitySetVersion": "ios-v1",
+    }
+
+    with TestClient(app) as client:
+        first = client.post(endpoint, json={
+            "requestId": "req_history_first",
+            "protocolVersion": "1.0",
+            "messages": [{"role": "user", "content": "第一问"}],
+            "deviceContext": context,
+        })
+        second = client.post(endpoint, json={
+            "requestId": "req_history_second",
+            "protocolVersion": "1.0",
+            "messages": [
+                {"role": "user", "content": "第一问"},
+                {"role": "assistant", "content": "客户端篡改的历史"},
+                {"role": "user", "content": "第二问"},
+            ],
+            "deviceContext": context,
+        })
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(provider.requests) == 2
+    assert [message.content for message in provider.requests[1].messages] == [
+        "第一问",
+        "你好",
+        "第二问",
+    ]
+
+
+def test_tool_continuation_becomes_authoritative_assistant_history() -> None:
+    provider = ToolContextProvider()
+    result_store = InMemoryToolResultStore()
+    chat_store = InMemoryChatRequestStore()
+    app = create_app(
+        settings=settings(),
+        provider=provider,
+        result_store=result_store,
+        chat_request_store=chat_store,
+    )
+    conversation_id = "79fcd9e0-e03e-4ed9-a22e-b92079c15a55"
+    message_endpoint = f"/v1/conversations/{conversation_id}/messages"
+    result_endpoint = f"/v1/conversations/{conversation_id}/tool-results"
+    context = {
+        "locale": "zh-CN",
+        "timeZone": "Asia/Shanghai",
+        "capabilitySetVersion": "ios-v1",
+    }
+
+    with TestClient(app) as client:
+        first = client.post(message_endpoint, json={
+            "requestId": "req_tool_history",
+            "protocolVersion": "1.0",
+            "messages": [{"role": "user", "content": "提醒我"}],
+            "deviceContext": context,
+        })
+        result = client.post(result_endpoint, json={
+            "requestId": "result_tool_history",
+            "protocolVersion": "1.0",
+            "toolCallId": "call_history",
+            "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+            "capability": "reminder.create",
+            "status": "verified",
+            "result": {"summary": "提醒事项已创建并验证。"},
+        })
+        second = client.post(message_endpoint, json={
+            "requestId": "req_after_tool",
+            "protocolVersion": "1.0",
+            "messages": [
+                {"role": "user", "content": "提醒我"},
+                {"role": "assistant", "content": "客户端旧占位回复"},
+                {"role": "user", "content": "刚才完成了吗？"},
+            ],
+            "deviceContext": context,
+        })
+
+    assert first.status_code == 200
+    assert result.status_code == 200
+    assert second.status_code == 200
+    assert [message.content for message in provider.requests[1].messages] == [
+        "提醒我",
+        "提醒事项已经成功创建。",
+        "刚才完成了吗？",
+    ]
 
 
 def test_failed_chat_request_releases_claim_for_same_request_id_retry() -> None:
