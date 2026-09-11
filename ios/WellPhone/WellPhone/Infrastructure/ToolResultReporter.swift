@@ -41,7 +41,20 @@ protocol ToolResultReporting: Sendable {
     func report(
         _ result: AgentToolResultReport,
         conversationID: UUID
-    ) async throws
+    ) async throws -> ToolResultAcknowledgement
+}
+
+struct ToolResultAcknowledgement: Decodable, Equatable, Sendable {
+    enum ContinuationStatus: String, Decodable, Equatable, Sendable {
+        case completed
+        case unavailable
+    }
+
+    let accepted: Bool
+    let duplicate: Bool
+    let continuationStatus: ContinuationStatus
+    let assistantMessage: String?
+    let protocolVersion: String
 }
 
 struct URLSessionToolResultReporter: ToolResultReporting {
@@ -51,7 +64,7 @@ struct URLSessionToolResultReporter: ToolResultReporting {
     func report(
         _ result: AgentToolResultReport,
         conversationID: UUID
-    ) async throws {
+    ) async throws -> ToolResultAcknowledgement {
         let endpoint = baseURL
             .appendingPathComponent("v1")
             .appendingPathComponent("conversations")
@@ -59,7 +72,7 @@ struct URLSessionToolResultReporter: ToolResultReporting {
             .appendingPathComponent("tool-results")
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = 120
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(result)
@@ -85,6 +98,7 @@ struct URLSessionToolResultReporter: ToolResultReporting {
               acknowledgement.protocolVersion == WellPhoneStreamDecoder.protocolVersion else {
             throw ToolResultReporterError.invalidResponse
         }
+        return acknowledgement
     }
 }
 
@@ -92,13 +106,15 @@ struct DisabledToolResultReporter: ToolResultReporting {
     func report(
         _ result: AgentToolResultReport,
         conversationID: UUID
-    ) async throws {}
-}
-
-private struct ToolResultAcknowledgement: Decodable {
-    let accepted: Bool
-    let duplicate: Bool
-    let protocolVersion: String
+    ) async throws -> ToolResultAcknowledgement {
+        ToolResultAcknowledgement(
+            accepted: true,
+            duplicate: false,
+            continuationStatus: .unavailable,
+            assistantMessage: nil,
+            protocolVersion: WellPhoneStreamDecoder.protocolVersion
+        )
+    }
 }
 
 private struct ToolResultServerErrorEnvelope: Decodable {

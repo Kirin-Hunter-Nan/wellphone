@@ -4,7 +4,8 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.protocol import ChatRequest
+from app.protocol import ChatRequest, ToolResultSubmission
+from app.providers.base import ProviderToolCallContext
 from app.providers.qwen import QwenProvider, UpstreamError
 
 
@@ -32,6 +33,7 @@ def make_settings() -> Settings:
 @pytest.mark.anyio
 async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     captured_request: httpx.Request | None = None
+    captured_contexts: list[ProviderToolCallContext] = []
     upstream = (
         'data: {"choices":[{"delta":{"content":"好的"}}]}\n\n'
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
@@ -51,7 +53,10 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = QwenProvider(make_settings(), client=client)
-    stream = await provider.open_reply(make_request())
+    async def capture_context(context: ProviderToolCallContext) -> None:
+        captured_contexts.append(context)
+
+    stream = await provider.open_reply(make_request(), on_tool_call=capture_context)
     encoded = "".join([event async for event in stream.events()])
     events = [
         json.loads(line.removeprefix("data: "))
@@ -77,6 +82,71 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     assert events[2]["capability"] == "reminder.create"
     assert events[2]["arguments"]["title"] == "提交报销"
     assert "reminder_create" not in events[2]
+    assert len(captured_contexts) == 1
+    assert captured_contexts[0].tool_call_id == "call_1"
+    assert captured_contexts[0].capability == "reminder.create"
+    assert captured_contexts[0].provider == "qwen"
+    assert captured_contexts[0].state["toolName"] == "reminder_create"
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_continues_qwen_with_the_verified_device_tool_result() -> None:
+    captured_body: dict[str, object] | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_body
+        captured_body = json.loads(request.content)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "提醒已经创建。"}}]
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = QwenProvider(make_settings(), client=client)
+    context = ProviderToolCallContext(
+        tool_call_id="call_1",
+        capability="reminder.create",
+        provider="qwen",
+        state={
+            "toolName": "reminder_create",
+            "messages": [
+                {"role": "user", "content": "提醒我提交报销"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "reminder_create",
+                            "arguments": "{\"title\":\"提交报销\"}",
+                        },
+                    }],
+                },
+            ],
+        },
+    )
+    result = ToolResultSubmission.model_validate({
+        "requestId": "result_1",
+        "protocolVersion": "1.0",
+        "toolCallId": "call_1",
+        "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+        "capability": "reminder.create",
+        "status": "verified",
+        "result": {"summary": "提醒事项已创建并验证。"},
+    })
+
+    reply = await provider.continue_reply(context, result)
+
+    assert reply == "提醒已经创建。"
+    assert captured_body is not None
+    assert captured_body["stream"] is False
+    assert captured_body["tool_choice"] == "none"
+    assert captured_body["tools"][0]["function"]["name"] == "reminder_create"
+    tool_message = captured_body["messages"][-1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["tool_call_id"] == "call_1"
+    assert json.loads(tool_message["content"])["status"] == "verified"
     await client.aclose()
 
 

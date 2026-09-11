@@ -30,6 +30,9 @@ final class ConversationController {
         self.gateway = gateway
         self.taskController = taskController
         restoreMostRecentConversation()
+        taskController.onAssistantFollowUp = { [weak self] followUp in
+            self?.appendAssistantFollowUp(followUp)
+        }
     }
 
     func sendDraft() {
@@ -150,6 +153,32 @@ final class ConversationController {
         touch(activeConversation)
         isGenerating = false
         generationTask = nil
+        save()
+    }
+
+    private func appendAssistantFollowUp(_ followUp: TaskController.AssistantFollowUp) {
+        let conversationID = followUp.conversationID
+        let descriptor = FetchDescriptor<ChatMessage>(
+            predicate: #Predicate { $0.conversationID == conversationID }
+        )
+        let alreadyExists = (try? modelContext.fetch(descriptor))?
+            .contains { $0.sourceToolCallID == followUp.toolCallID } == true
+        guard !alreadyExists else { return }
+
+        let message = ChatMessage(
+            conversationID: conversationID,
+            role: .assistant,
+            text: followUp.text,
+            deliveryState: .sent,
+            sourceToolCallID: followUp.toolCallID
+        )
+        modelContext.insert(message)
+        if activeConversationID == conversationID {
+            messages.append(message)
+        }
+        if let targetConversation = conversations.first(where: { $0.id == conversationID }) {
+            touch(targetConversation)
+        }
         save()
     }
 

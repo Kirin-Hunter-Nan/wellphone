@@ -1,11 +1,20 @@
+import asyncio
 from collections.abc import AsyncIterator
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
 from app.postgres_store import InMemoryToolResultStore
-from app.protocol import ChatRequest, assistant_delta, encode_sse, response_completed
+from app.protocol import (
+    ChatRequest,
+    ToolResultSubmission,
+    assistant_delta,
+    encode_sse,
+    response_completed,
+)
+from app.providers.base import ProviderToolCallContext, ToolCallContextSink
 
 
 class FakeStream:
@@ -16,10 +25,26 @@ class FakeStream:
 
 class FakeProvider:
     request: ChatRequest | None = None
+    continuation_count = 0
 
-    async def open_reply(self, request: ChatRequest) -> FakeStream:
+    async def open_reply(
+        self,
+        request: ChatRequest,
+        *,
+        on_tool_call: ToolCallContextSink | None = None,
+    ) -> FakeStream:
+        del on_tool_call
         self.request = request
         return FakeStream()
+
+    async def continue_reply(
+        self,
+        context: ProviderToolCallContext,
+        result: ToolResultSubmission,
+    ) -> str:
+        self.continuation_count += 1
+        assert context.tool_call_id == result.tool_call_id
+        return "提醒事项已经成功创建。"
 
     async def close(self) -> None:
         pass
@@ -131,12 +156,52 @@ def test_accepts_tool_results_idempotently_and_rejects_conflicts() -> None:
     assert first.json() == {
         "accepted": True,
         "duplicate": False,
+        "continuationStatus": "unavailable",
         "protocolVersion": "1.0",
     }
     assert duplicate.status_code == 200
     assert duplicate.json()["duplicate"] is True
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "tool_result_conflict"
+
+
+def test_continues_model_from_saved_tool_call_and_reuses_reply_on_retry() -> None:
+    provider = FakeProvider()
+    store = InMemoryToolResultStore()
+    conversation_id = "39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7"
+    asyncio.run(store.save_tool_call_context(
+        UUID(conversation_id),
+        ProviderToolCallContext(
+            tool_call_id="call_123",
+            capability="reminder.create",
+            provider="fake",
+            state={"messages": []},
+        ),
+    ))
+    app = create_app(settings=settings(), provider=provider, result_store=store)
+    payload = {
+        "requestId": "result_123",
+        "protocolVersion": "1.0",
+        "toolCallId": "call_123",
+        "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+        "capability": "reminder.create",
+        "status": "verified",
+        "result": {"summary": "提醒事项已创建并验证。"},
+    }
+
+    with TestClient(app) as client:
+        first = client.post(f"/v1/conversations/{conversation_id}/tool-results", json=payload)
+        retry = client.post(
+            f"/v1/conversations/{conversation_id}/tool-results",
+            json={**payload, "requestId": "result_retry"},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["continuationStatus"] == "completed"
+    assert first.json()["assistantMessage"] == "提醒事项已经成功创建。"
+    assert retry.json()["assistantMessage"] == first.json()["assistantMessage"]
+    assert retry.json()["duplicate"] is True
+    assert provider.continuation_count == 1
 
 
 def test_rejects_invalid_tool_result_outcome() -> None:

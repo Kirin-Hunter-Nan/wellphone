@@ -5,11 +5,19 @@ import SwiftData
 @MainActor
 @Observable
 final class TaskController {
+    struct AssistantFollowUp: Equatable, Sendable {
+        let conversationID: UUID
+        let toolCallID: String
+        let text: String
+    }
+
     private(set) var tasks: [AgentTask] = []
     private let modelContext: ModelContext
     private let runtime: AgentRuntime
     private let notifier: any TaskNotifying
     private let resultReporter: any ToolResultReporting
+    @ObservationIgnored
+    var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
     var activeTasks: [AgentTask] {
         tasks.filter { $0.status.isActive }
@@ -263,7 +271,20 @@ final class TaskController {
         guard let report = makeResultReport(for: task) else { return }
 
         do {
-            try await resultReporter.report(report, conversationID: task.conversationID)
+            let acknowledgement = try await resultReporter.report(
+                report,
+                conversationID: task.conversationID
+            )
+            if let assistantMessage = acknowledgement.assistantMessage?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !assistantMessage.isEmpty,
+               let toolCallID = task.toolCallID {
+                onAssistantFollowUp?(AssistantFollowUp(
+                    conversationID: task.conversationID,
+                    toolCallID: toolCallID,
+                    text: assistantMessage
+                ))
+            }
             task.resultReportState = .delivered
             task.resultReportError = nil
         } catch let error as ToolResultReporterError where error.isConflict {

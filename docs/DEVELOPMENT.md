@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.1 最小 Agent 闭环已完成：Python 后端协议适配、capability 请求、参数校验、确认卡片、EventKit 写入、回读验证及任务进度已接通 |
+| 当前阶段 | V0.1 最小 Agent 闭环已完成：Python 后端协议适配、capability 请求、参数校验、确认卡片、EventKit 写入、回读验证、PostgreSQL 结果持久化及模型续接回复已接通 |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 
@@ -85,7 +85,8 @@ V0 不是最终 Agent，但所有消息必须使用未来可扩展的数据模�
 4. App 展示一次明确确认。
 5. EventKit 创建提醒事项。
 6. 工具重新读取提醒事项并验证。
-7. 聊天中展示已验证结果，而不是模型自行宣称完成。
+7. 服务端使用真实 Tool Result 续接原始模型 Tool Call。
+8. 聊天中展示基于已验证结果生成的最终回复，而不是模型提前宣称完成。
 
 ### 3.3 V0.2：任务运行时
 
@@ -504,7 +505,7 @@ POST /v1/conversations/{id}/messages
 POST /v1/conversations/{id}/tool-results
 ```
 
-iOS 在 Tool 完成验证、用户取消或执行失败后提交 `verified`、`declined` 或 `failed`。服务端以 `(conversation_id, tool_call_id)` 作为 PostgreSQL 唯一键：完全相同的重试返回成功，不同结果返回 `409 tool_result_conflict`。网络失败不回滚手机端已经完成的真实操作，客户端保留待同步状态并在下次启动时重试。
+iOS 在 Tool 完成验证、用户取消或执行失败后提交 `verified`、`declined` 或 `failed`。服务端以 `(conversation_id, tool_call_id)` 作为 PostgreSQL 唯一键：完全相同的重试返回成功，不同结果返回 `409 tool_result_conflict`。当原始 Provider Tool Call 上下文可用时，响应包含 `continuationStatus: completed` 和 `assistantMessage`；服务端会保存并在重试时复用同一回复。部署升级前遗留、没有上下文的结果返回 `continuationStatus: unavailable`，但仍会被安全接收。网络或模型续接失败不回滚手机端已经完成的真实操作，客户端保留待同步状态并在下次启动时重试。
 
 ### 12.3 计划
 

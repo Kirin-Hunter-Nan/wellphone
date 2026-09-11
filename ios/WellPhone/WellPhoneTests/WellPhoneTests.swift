@@ -230,6 +230,48 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func verifiedToolResultAddsServerFollowUpToChatOnce() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let reporter = ReplyingToolResultReporter()
+        let taskController = TaskController(
+            modelContext: context,
+            runtime: .testing(reminderExecutor: FakeReminderExecutor()),
+            notifier: DisabledTaskNotifier(),
+            resultReporter: reporter
+        )
+        let controller = ConversationController(
+            modelContext: context,
+            gateway: DemoModelGateway(),
+            taskController: taskController
+        )
+        let conversationID = UUID()
+        let conversation = Conversation(title: "提醒测试")
+        conversation.id = conversationID
+        context.insert(conversation)
+        try context.save()
+        controller.selectConversation(conversation)
+        let task = try await taskController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_follow_up",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: conversationID,
+            sourceMessageID: nil
+        )
+
+        await taskController.confirmTask(taskID: task.id)
+        await taskController.flushPendingResultReports()
+
+        let followUps = controller.messages.filter {
+            $0.sourceToolCallID == "call_follow_up"
+        }
+        #expect(followUps.count == 1)
+        #expect(followUps.first?.text == "提醒事项已经成功创建。")
+    }
+
+    @Test @MainActor
     func runtimeKeepsReminderAtomicWhileExposingInternalSteps() throws {
         let executor = FakeReminderExecutor()
         let runtime = AgentRuntime.testing(reminderExecutor: executor)
@@ -368,8 +410,15 @@ private actor RecordingToolResultReporter: ToolResultReporting {
     func report(
         _ result: AgentToolResultReport,
         conversationID: UUID
-    ) async throws {
+    ) async throws -> ToolResultAcknowledgement {
         reports.append(CapturedReport(result: result, conversationID: conversationID))
+        return ToolResultAcknowledgement(
+            accepted: true,
+            duplicate: false,
+            continuationStatus: .unavailable,
+            assistantMessage: nil,
+            protocolVersion: "1.0"
+        )
     }
 }
 
@@ -379,11 +428,33 @@ private actor FailOnceToolResultReporter: ToolResultReporting {
     func report(
         _ result: AgentToolResultReport,
         conversationID: UUID
-    ) async throws {
+    ) async throws -> ToolResultAcknowledgement {
         attemptCount += 1
         if attemptCount == 1 {
             throw URLError(.notConnectedToInternet)
         }
+        return ToolResultAcknowledgement(
+            accepted: true,
+            duplicate: true,
+            continuationStatus: .unavailable,
+            assistantMessage: nil,
+            protocolVersion: "1.0"
+        )
+    }
+}
+
+private actor ReplyingToolResultReporter: ToolResultReporting {
+    func report(
+        _ result: AgentToolResultReport,
+        conversationID: UUID
+    ) async throws -> ToolResultAcknowledgement {
+        ToolResultAcknowledgement(
+            accepted: true,
+            duplicate: false,
+            continuationStatus: .completed,
+            assistantMessage: "提醒事项已经成功创建。",
+            protocolVersion: "1.0"
+        )
     }
 }
 

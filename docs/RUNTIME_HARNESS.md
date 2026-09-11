@@ -18,7 +18,19 @@ Qwen / future provider
 
 Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式响应解析，以及厂商 Tool 名称到 capability 的映射。Swift 客户端负责权限、用户确认、本地任务状态、系统 API 调用与结果验证。模型供应商变化不应要求修改 Runtime Harness。
 
-设备端完成最终状态后，通过 `tool-results` 将 `verified / declined / failed` 回传服务端。结果先在 SwiftData 标记为待同步，再由 PostgreSQL 使用 `(conversation_id, tool_call_id)` 幂等接收；回传失败不得改变设备端已经验证的真实执行结果。
+模型发起 Tool Call 时，Provider Adapter 会先把厂商专属的续接上下文作为 opaque JSON 保存到 PostgreSQL，再向 Swift 客户端发送平台无关的 `tool.requested`。设备端完成最终状态后，通过 `tool-results` 将 `verified / declined / failed` 回传服务端；服务端以原始 Tool Call、真实执行结果续接模型，并将最终回复返回聊天窗口。
+
+结果先在 SwiftData 标记为待同步，再由 PostgreSQL 使用 `(conversation_id, tool_call_id)` 幂等接收。最终模型回复也绑定到同一个键：网络重试复用已保存的回复，不重复调用模型，也不在聊天窗口重复插入消息。回传或续接失败不得改变设备端已经验证的真实执行结果。
+
+```text
+Model Tool Call
+  -> PostgreSQL opaque provider context
+  -> WellPhone tool.requested
+  -> Swift confirm / execute / verify
+  -> PostgreSQL idempotent Tool Result
+  -> Provider continuation
+  -> verified assistant reply in chat
+```
 
 ## 执行链
 

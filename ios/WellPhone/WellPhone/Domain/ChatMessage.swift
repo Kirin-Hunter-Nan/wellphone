@@ -22,6 +22,7 @@ final class ChatMessage {
     var createdAt: Date
     var deliveryStateRawValue: String
     var relatedTaskID: UUID?
+    var sourceToolCallID: String?
 
     var role: MessageRole {
         get { MessageRole(rawValue: roleRawValue) ?? .assistant }
@@ -40,7 +41,8 @@ final class ChatMessage {
         text: String,
         createdAt: Date = Date(),
         deliveryState: DeliveryState,
-        relatedTaskID: UUID? = nil
+        relatedTaskID: UUID? = nil,
+        sourceToolCallID: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -49,5 +51,6 @@ final class ChatMessage {
         self.createdAt = createdAt
         self.deliveryStateRawValue = deliveryState.rawValue
         self.relatedTaskID = relatedTaskID
+        self.sourceToolCallID = sourceToolCallID
     }
 }

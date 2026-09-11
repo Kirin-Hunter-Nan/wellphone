@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/protocol/tool-result-ack.schema.json",
+  "title": "WellPhone Tool Result Acknowledgement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "accepted",
+    "duplicate",
+    "continuationStatus",
+    "protocolVersion"
+  ],
+  "properties": {
+    "accepted": { "const": true },
+    "duplicate": { "type": "boolean" },
+    "continuationStatus": {
+      "enum": ["completed", "unavailable"]
+    },
+    "assistantMessage": {
+      "type": "string",
+      "minLength": 1
+    },
+    "protocolVersion": { "const": "1.0" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "continuationStatus": { "const": "completed" } },
+        "required": ["continuationStatus"]
+      },
+      "then": { "required": ["assistantMessage"] }
+    }
+  ]
+}
