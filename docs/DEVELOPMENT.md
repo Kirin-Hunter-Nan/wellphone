@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.1 最小 Agent 闭环已完成，V0.2 已启动：聊天请求、权威对话历史、Tool Result、模型续接和任务检查点由 PostgreSQL 协调；设备端执行凭证与 Tool 级幂等标记支持重启后安全恢复执行和验证 |
+| 当前阶段 | V0.1 最小 Agent 闭环已完成，V0.2 已启动：聊天请求、权威对话历史、Tool Result、模型续接和任务检查点由 PostgreSQL 协调；设备端执行凭证、Tool 级幂等标记与持久化重试状态支持重启后安全恢复执行和验证 |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 
@@ -626,6 +626,7 @@ GET  /v1/integrations/mail/messages/{providerMessageID}
 - 重启后保留等待确认的任务，不绕过用户授权。
 - 已持久化 execution receipt 的任务只恢复验证，不重复系统写入。
 - `reminder.create` 使用稳定幂等标记恢复结果未知的执行，重启后不会重复创建提醒。
+- 只有幂等 Tool 的瞬时错误可以自动重试；尝试次数、退避时间与最近错误持久化并同步到 PostgreSQL，达到上限后明确失败。
 - 执行结果不确定且不支持幂等重试的任务明确失败，不自动重放。
 - 终态结果与最终聊天回复可以在网络恢复后补报。
 

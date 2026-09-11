@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.protocol import (
     ChatRequest,
+    TaskCheckpointSubmission,
     ToolResultSubmission,
     assistant_delta,
     encode_sse,
@@ -86,3 +87,33 @@ def test_validates_tool_result_outcomes() -> None:
     invalid.pop("result")
     with pytest.raises(ValidationError, match="requires error data"):
         ToolResultSubmission.model_validate(invalid)
+
+
+def test_checkpoint_fingerprint_keeps_legacy_zero_attempts_compatible() -> None:
+    payload = {
+        "requestId": "checkpoint_1",
+        "protocolVersion": "1.0",
+        "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+        "revision": 1,
+        "toolCallId": "call_123",
+        "capability": "reminder.create",
+        "status": "running",
+        "phase": "executing",
+        "occurredAt": "2026-09-11T08:00:00Z",
+    }
+    legacy = TaskCheckpointSubmission.model_validate(payload)
+    explicit_zero = TaskCheckpointSubmission.model_validate({
+        **payload,
+        "executionAttemptCount": 0,
+    })
+
+    assert legacy.semantic_payload() == explicit_zero.semantic_payload()
+    assert "executionAttemptCount" not in legacy.semantic_payload()
+
+    retrying = TaskCheckpointSubmission.model_validate({
+        **payload,
+        "executionAttemptCount": 1,
+        "nextExecutionRetryAt": "2026-09-11T08:01:00Z",
+        "lastExecutionErrorMessage": "temporary failure",
+    })
+    assert retrying.semantic_payload()["executionAttemptCount"] == 1

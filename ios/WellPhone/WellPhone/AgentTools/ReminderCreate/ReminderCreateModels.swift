@@ -74,6 +74,7 @@ enum ReminderToolError: LocalizedError {
     case accessDenied
     case listNotFound(String)
     case noDefaultList
+    case transientSystemFailure(String)
     case missingIdentifier
     case invalidExecutionReceipt
     case verificationFailed
@@ -87,6 +88,7 @@ enum ReminderToolError: LocalizedError {
         case .accessDenied: "没有获得提醒事项的完整访问权限。"
         case .listNotFound(let name): "找不到名为“\(name)”的提醒列表。"
         case .noDefaultList: "系统没有可用的默认提醒列表。"
+        case .transientSystemFailure(let message): message
         case .missingIdentifier: "系统没有返回提醒事项标识。"
         case .invalidExecutionReceipt: "提醒工具返回了无效的执行凭证。"
         case .verificationFailed: "提醒已写入，但回读验证失败。"

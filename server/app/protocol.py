@@ -159,6 +159,16 @@ class TaskCheckpointSubmission(BaseModel):
     detail: str | None = Field(default=None, max_length=2_000)
     result_summary: str | None = Field(default=None, alias="resultSummary", max_length=4_000)
     error_message: str | None = Field(default=None, alias="errorMessage", max_length=4_000)
+    execution_attempt_count: int = Field(default=0, alias="executionAttemptCount", ge=0)
+    next_execution_retry_at: datetime | None = Field(
+        default=None,
+        alias="nextExecutionRetryAt",
+    )
+    last_execution_error_message: str | None = Field(
+        default=None,
+        alias="lastExecutionErrorMessage",
+        max_length=4_000,
+    )
     occurred_at: datetime = Field(alias="occurredAt")
 
     @model_validator(mode="after")
@@ -171,6 +181,14 @@ class TaskCheckpointSubmission(BaseModel):
         }.get(self.status)
         if required_phase is not None and self.phase != required_phase:
             raise ValueError(f"Task status {self.status} requires phase {required_phase}")
+        if self.next_execution_retry_at is not None and (
+            self.status != "running"
+            or self.phase != "executing"
+            or self.execution_attempt_count == 0
+        ):
+            raise ValueError(
+                "nextExecutionRetryAt requires a running execution with at least one attempt"
+            )
         return self
 
     def semantic_payload(self) -> dict[str, object]:
@@ -179,6 +197,7 @@ class TaskCheckpointSubmission(BaseModel):
             by_alias=True,
             exclude={"request_id"},
             exclude_none=True,
+            exclude_defaults=True,
         )
 
 

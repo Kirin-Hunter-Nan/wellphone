@@ -70,6 +70,9 @@ final class AgentTask {
     var resultSummary: String?
     var errorMessage: String?
     var executionReceiptData: Data?
+    var executionAttemptCountValue: Int?
+    var nextExecutionRetryAt: Date?
+    var lastExecutionErrorMessage: String?
     var resultReportStateRawValue: String?
     var resultReportError: String?
     var checkpointRevisionValue: Int?
@@ -89,6 +92,11 @@ final class AgentTask {
     var resultReportState: ToolResultReportState? {
         get { resultReportStateRawValue.flatMap(ToolResultReportState.init(rawValue:)) }
         set { resultReportStateRawValue = newValue?.rawValue }
+    }
+
+    var executionAttemptCount: Int {
+        get { executionAttemptCountValue ?? 0 }
+        set { executionAttemptCountValue = newValue }
     }
 
     var checkpointRevision: Int {
@@ -122,6 +130,9 @@ final class AgentTask {
         resultSummary: String? = nil,
         errorMessage: String? = nil,
         executionReceiptData: Data? = nil,
+        executionAttemptCount: Int? = nil,
+        nextExecutionRetryAt: Date? = nil,
+        lastExecutionErrorMessage: String? = nil,
         resultReportState: ToolResultReportState? = nil,
         resultReportError: String? = nil,
         checkpointRevision: Int? = nil,
@@ -146,6 +157,9 @@ final class AgentTask {
         self.resultSummary = resultSummary
         self.errorMessage = errorMessage
         self.executionReceiptData = executionReceiptData
+        self.executionAttemptCountValue = executionAttemptCount
+        self.nextExecutionRetryAt = nextExecutionRetryAt
+        self.lastExecutionErrorMessage = lastExecutionErrorMessage
         self.resultReportStateRawValue = resultReportState?.rawValue
         self.resultReportError = resultReportError
         self.checkpointRevisionValue = checkpointRevision

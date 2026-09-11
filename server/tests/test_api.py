@@ -595,6 +595,7 @@ def test_accepts_task_checkpoints_idempotently_and_tracks_revision_gaps() -> Non
         "phase": "waitingForConfirmation",
         "progress": 0.35,
         "detail": "等待用户确认",
+        "executionAttemptCount": 0,
         "occurredAt": "2026-09-11T08:00:00Z",
     }
 
@@ -621,3 +622,33 @@ def test_accepts_task_checkpoints_idempotently_and_tracks_revision_gaps() -> Non
     assert jumped.json()["gap"] is True
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "task_checkpoint_conflict"
+
+
+def test_rejects_retry_time_outside_running_execution() -> None:
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+    )
+    endpoint = (
+        "/v1/conversations/39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7/task-checkpoints"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(endpoint, json={
+            "requestId": "checkpoint_invalid_retry",
+            "protocolVersion": "1.0",
+            "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+            "revision": 1,
+            "toolCallId": "call_123",
+            "capability": "reminder.create",
+            "status": "completed",
+            "phase": "completed",
+            "progress": 1,
+            "executionAttemptCount": 1,
+            "nextExecutionRetryAt": "2026-09-11T08:01:00Z",
+            "occurredAt": "2026-09-11T08:00:00Z",
+        })
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"

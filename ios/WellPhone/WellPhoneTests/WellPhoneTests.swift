@@ -290,14 +290,104 @@ struct WellPhoneTests {
         let checkpoints = await checkpointReporter.reports.sorted {
             $0.checkpoint.revision < $1.checkpoint.revision
         }
-        #expect(checkpoints.map(\.checkpoint.revision) == [1, 2, 3, 4])
+        #expect(checkpoints.map(\.checkpoint.revision) == [1, 2, 3, 4, 5])
         #expect(checkpoints.map(\.checkpoint.phase) == [
             .waitingForConfirmation,
+            .executing,
             .executing,
             .verifying,
             .completed,
         ])
+        #expect(checkpoints.map(\.checkpoint.executionAttemptCount) == [0, 0, 1, 1, 1])
         #expect(task.checkpointReportState == .delivered)
+    }
+
+    @Test @MainActor
+    func transientReminderExecutionFailureRetriesAndCompletes() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(createErrors: [
+            ReminderToolError.transientSystemFailure("系统服务暂时不可用。")
+        ])
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_transient_retry",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.confirmTask(taskID: task.id)
+
+        #expect(executor.createCount == 2)
+        #expect(executor.verifyCount == 1)
+        #expect(task.executionAttemptCount == 2)
+        #expect(task.lastExecutionErrorMessage == "系统服务暂时不可用。")
+        #expect(task.nextExecutionRetryAt == nil)
+        #expect(task.status == .completed)
+    }
+
+    @Test @MainActor
+    func terminalReminderExecutionFailureDoesNotRetry() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(createErrors: [ReminderToolError.accessDenied])
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_terminal_failure",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.confirmTask(taskID: task.id)
+
+        #expect(executor.createCount == 1)
+        #expect(executor.verifyCount == 0)
+        #expect(task.executionAttemptCount == 1)
+        #expect(task.status == .failed)
+        #expect(task.errorMessage == ReminderToolError.accessDenied.localizedDescription)
+    }
+
+    @Test @MainActor
+    func transientReminderExecutionStopsAtRetryLimit() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(createErrors: [
+            ReminderToolError.transientSystemFailure("系统服务暂时不可用。"),
+            ReminderToolError.transientSystemFailure("系统服务暂时不可用。"),
+            ReminderToolError.transientSystemFailure("系统服务暂时不可用。"),
+        ])
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_retry_exhausted",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.confirmTask(taskID: task.id)
+
+        #expect(executor.createCount == 3)
+        #expect(executor.verifyCount == 0)
+        #expect(task.executionAttemptCount == 3)
+        #expect(task.status == .failed)
+        #expect(task.errorMessage?.contains("重试上限") == true)
     }
 
     @Test @MainActor
@@ -487,7 +577,7 @@ struct WellPhoneTests {
         await controller.flushPendingCheckpoints()
         #expect(task.status == .completed)
         #expect(executor.createCount == 1)
-        #expect(task.checkpointRevision == 4)
+        #expect(task.checkpointRevision == 5)
         #expect(task.checkpointReportState == .pending)
 
         await checkpointReporter.setShouldFail(false)
@@ -495,7 +585,7 @@ struct WellPhoneTests {
         #expect(task.status == .completed)
         #expect(task.checkpointReportState == .delivered)
         let latestRevision = await checkpointReporter.latestRevision
-        #expect(latestRevision == 4)
+        #expect(latestRevision == 5)
     }
 
     @Test @MainActor
@@ -632,6 +722,42 @@ struct WellPhoneTests {
         #expect(task.phase == .completed)
     }
 
+    @Test @MainActor
+    func appRestartDoesNotExceedPersistedExecutionRetryLimit() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_exhausted_after_restart",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+        task.status = .running
+        task.phase = .executing
+        task.executionAttemptCount = 3
+        task.lastExecutionErrorMessage = "系统服务暂时不可用。"
+        try container.mainContext.save()
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        await restoredController.recoverInterruptedTasks()
+
+        #expect(executor.recoverCount == 1)
+        #expect(executor.createCount == 0)
+        #expect(task.executionAttemptCount == 3)
+        #expect(task.status == .failed)
+        #expect(task.errorMessage?.contains("已达到重试上限") == true)
+    }
+
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema([
@@ -653,9 +779,14 @@ private final class FakeReminderExecutor: ReminderExecuting {
     private(set) var verifyCount = 0
     private(set) var lastIdempotencyKey: String?
     private let recoveredReminder: CreatedReminder?
+    private var createErrors: [any Error]
 
-    init(recoveredReminder: CreatedReminder? = nil) {
+    init(
+        recoveredReminder: CreatedReminder? = nil,
+        createErrors: [any Error] = []
+    ) {
         self.recoveredReminder = recoveredReminder
+        self.createErrors = createErrors
     }
 
     func create(
@@ -664,6 +795,9 @@ private final class FakeReminderExecutor: ReminderExecuting {
     ) async throws -> CreatedReminder {
         createCount += 1
         lastIdempotencyKey = idempotencyKey
+        if !createErrors.isEmpty {
+            throw createErrors.removeFirst()
+        }
         return CreatedReminder(identifier: "test-reminder-id", listTitle: "提醒事项")
     }
 

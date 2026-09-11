@@ -38,6 +38,11 @@ struct ToolExecutionReceipt: Sendable {
     let payload: Data
 }
 
+enum ToolExecutionErrorDisposition: Equatable, Sendable {
+    case retryable
+    case terminal
+}
+
 struct VerifiedToolResult: Equatable, Sendable {
     let summary: String
 }
@@ -57,8 +62,16 @@ protocol AgentTool: AnyObject {
         argumentsJSON: String,
         idempotencyKey: String
     ) async throws -> ToolExecutionReceipt?
+    func executionErrorDisposition(_ error: any Error) -> ToolExecutionErrorDisposition
     func verify(
         receipt: ToolExecutionReceipt,
         argumentsJSON: String
     ) throws -> VerifiedToolResult
+}
+
+extension AgentTool {
+    func executionErrorDisposition(_ error: any Error) -> ToolExecutionErrorDisposition {
+        _ = error
+        return .terminal
+    }
 }

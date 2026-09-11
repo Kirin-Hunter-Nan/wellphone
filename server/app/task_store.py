@@ -79,11 +79,33 @@ class PostgreSQLTaskCheckpointStore:
                     detail TEXT,
                     result_summary TEXT,
                     error_message TEXT,
+                    execution_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_execution_retry_at TIMESTAMPTZ,
+                    last_execution_error_message TEXT,
                     occurred_at TIMESTAMPTZ NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL,
                     PRIMARY KEY (conversation_id, task_id),
                     UNIQUE (conversation_id, tool_call_id)
                 )
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE agent_task_snapshots
+                    ADD COLUMN IF NOT EXISTS execution_attempt_count
+                    INTEGER NOT NULL DEFAULT 0
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE agent_task_snapshots
+                    ADD COLUMN IF NOT EXISTS next_execution_retry_at TIMESTAMPTZ
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE agent_task_snapshots
+                    ADD COLUMN IF NOT EXISTS last_execution_error_message TEXT
                 """
             )
 
@@ -187,8 +209,12 @@ class PostgreSQLTaskCheckpointStore:
                         INSERT INTO agent_task_snapshots (
                             conversation_id, task_id, revision, tool_call_id, capability,
                             status, phase, progress, detail, result_summary, error_message,
-                            occurred_at, updated_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            execution_attempt_count, next_execution_retry_at,
+                            last_execution_error_message, occurred_at, updated_at
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s
+                        )
                         ON CONFLICT (conversation_id, task_id) DO UPDATE
                         SET revision = EXCLUDED.revision,
                             tool_call_id = EXCLUDED.tool_call_id,
@@ -199,6 +225,9 @@ class PostgreSQLTaskCheckpointStore:
                             detail = EXCLUDED.detail,
                             result_summary = EXCLUDED.result_summary,
                             error_message = EXCLUDED.error_message,
+                            execution_attempt_count = EXCLUDED.execution_attempt_count,
+                            next_execution_retry_at = EXCLUDED.next_execution_retry_at,
+                            last_execution_error_message = EXCLUDED.last_execution_error_message,
                             occurred_at = EXCLUDED.occurred_at,
                             updated_at = EXCLUDED.updated_at
                         WHERE agent_task_snapshots.revision < EXCLUDED.revision
@@ -216,6 +245,9 @@ class PostgreSQLTaskCheckpointStore:
                             checkpoint.detail,
                             checkpoint.result_summary,
                             checkpoint.error_message,
+                            checkpoint.execution_attempt_count,
+                            checkpoint.next_execution_retry_at,
+                            checkpoint.last_execution_error_message,
                             checkpoint.occurred_at,
                             now,
                         ),

@@ -17,6 +17,7 @@ final class TaskController {
     private let notifier: any TaskNotifying
     private let resultReporter: any ToolResultReporting
     private let checkpointReporter: any TaskCheckpointReporting
+    private let executionRetryPolicy: ToolExecutionRetryPolicy
     @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
@@ -37,13 +38,15 @@ final class TaskController {
         runtime: AgentRuntime,
         notifier: any TaskNotifying,
         resultReporter: any ToolResultReporting = DisabledToolResultReporter(),
-        checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter()
+        checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter(),
+        executionRetryPolicy: ToolExecutionRetryPolicy = .standard
     ) {
         self.modelContext = modelContext
         self.runtime = runtime
         self.notifier = notifier
         self.resultReporter = resultReporter
         self.checkpointReporter = checkpointReporter
+        self.executionRetryPolicy = executionRetryPolicy
         refresh()
     }
 
@@ -70,7 +73,8 @@ final class TaskController {
             runtime: .testing(reminderExecutor: reminderExecutor),
             notifier: DisabledTaskNotifier(),
             resultReporter: DisabledToolResultReporter(),
-            checkpointReporter: DisabledTaskCheckpointReporter()
+            checkpointReporter: DisabledTaskCheckpointReporter(),
+            executionRetryPolicy: .immediateTesting
         )
     }
 
@@ -194,7 +198,7 @@ final class TaskController {
             touchAndSave(task)
             queueCheckpoint(for: task)
 
-            let receipt = try await runtime.execute(task: task)
+            let receipt = try await executeWithRetry(task)
             persistReceiptAndBeginVerification(receipt, for: task)
             try await verifyAndComplete(task, receipt: receipt)
         } catch {
@@ -226,19 +230,7 @@ final class TaskController {
                 }
             case .executing:
                 do {
-                    let receipt: ToolExecutionReceipt
-                    if let recovered = try await runtime.recoverExecution(task: task) {
-                        receipt = recovered
-                    } else if try runtime.supportsExecutionRetry(task: task) {
-                        receipt = try await runtime.execute(task: task)
-                    } else {
-                        await fail(
-                            task,
-                            error: TaskRecoveryError.executionOutcomeUnknown,
-                            reportResultImmediately: false
-                        )
-                        continue
-                    }
+                    let receipt = try await recoverOrExecute(task)
                     persistReceiptAndBeginVerification(receipt, for: task)
                     try await verifyAndComplete(
                         task,
@@ -295,6 +287,67 @@ final class TaskController {
         await reportResult(for: task)
     }
 
+    private func recoverOrExecute(_ task: AgentTask) async throws -> ToolExecutionReceipt {
+        do {
+            if let recovered = try await runtime.recoverExecution(task: task) {
+                return recovered
+            }
+        } catch {
+            let canRetry = try runtime.supportsExecutionRetry(task: task)
+            let disposition = try runtime.executionErrorDisposition(error, for: task)
+            guard canRetry, disposition == .retryable else { throw error }
+            task.lastExecutionErrorMessage = error.localizedDescription
+            queueCheckpoint(for: task)
+        }
+
+        guard try runtime.supportsExecutionRetry(task: task) else {
+            throw TaskRecoveryError.executionOutcomeUnknown
+        }
+        return try await executeWithRetry(task)
+    }
+
+    private func executeWithRetry(_ task: AgentTask) async throws -> ToolExecutionReceipt {
+        let supportsRetry = try runtime.supportsExecutionRetry(task: task)
+        while task.executionAttemptCount < executionRetryPolicy.maximumAttempts {
+            try await waitForScheduledRetry(task)
+            task.executionAttemptCount += 1
+            task.nextExecutionRetryAt = nil
+            queueCheckpoint(for: task)
+
+            do {
+                return try await runtime.execute(task: task)
+            } catch {
+                let disposition = try runtime.executionErrorDisposition(error, for: task)
+                guard supportsRetry,
+                      disposition == .retryable else { throw error }
+
+                task.lastExecutionErrorMessage = error.localizedDescription
+                guard let delay = executionRetryPolicy.delay(
+                    afterFailedAttempt: task.executionAttemptCount
+                ) else {
+                    throw TaskRecoveryError.executionRetriesExhausted(
+                        lastError: error.localizedDescription
+                    )
+                }
+                task.nextExecutionRetryAt = Date().addingTimeInterval(
+                    Double(delay) / 1_000_000_000
+                )
+                queueCheckpoint(for: task)
+            }
+        }
+        throw TaskRecoveryError.executionRetriesExhausted(
+            lastError: task.lastExecutionErrorMessage
+        )
+    }
+
+    private func waitForScheduledRetry(_ task: AgentTask) async throws {
+        guard let retryAt = task.nextExecutionRetryAt else { return }
+        let remainingSeconds = retryAt.timeIntervalSinceNow
+        guard remainingSeconds > 0 else { return }
+        let nanoseconds = UInt64(remainingSeconds * 1_000_000_000)
+        try await Task<Never, Never>.sleep(nanoseconds: nanoseconds)
+    }
+
     private func step(_ sequence: Int, for task: AgentTask) -> AgentTaskStep? {
         steps(for: task).first { $0.sequence == sequence }
     }
@@ -322,6 +375,7 @@ final class TaskController {
         for task: AgentTask
     ) {
         task.executionReceiptData = receipt.payload
+        task.nextExecutionRetryAt = nil
         completeStep(2, for: task)
         startStep(3, for: task)
         task.phase = .verifying
@@ -365,6 +419,7 @@ final class TaskController {
         task.status = .failed
         task.phase = .failed
         task.progress = nil
+        task.nextExecutionRetryAt = nil
         task.errorMessage = error.localizedDescription
         touchAndSave(task)
         queueCheckpoint(for: task)
@@ -450,6 +505,9 @@ final class TaskController {
             detail: task.detail,
             resultSummary: task.resultSummary,
             errorMessage: task.errorMessage,
+            executionAttemptCount: task.executionAttemptCount,
+            nextExecutionRetryAt: task.nextExecutionRetryAt,
+            lastExecutionErrorMessage: task.lastExecutionErrorMessage,
             occurredAt: task.updatedAt
         )
     }
@@ -546,6 +604,7 @@ final class TaskController {
 
 private enum TaskRecoveryError: LocalizedError {
     case executionOutcomeUnknown
+    case executionRetriesExhausted(lastError: String?)
     case missingExecutionReceipt
     case invalidInterruptedPhase
 
@@ -553,6 +612,12 @@ private enum TaskRecoveryError: LocalizedError {
         switch self {
         case .executionOutcomeUnknown:
             "App 在系统写入阶段中断，无法确认操作结果。为避免重复写入，本次任务不会自动重试。"
+        case .executionRetriesExhausted(let lastError):
+            if let lastError, !lastError.isEmpty {
+                "Tool 执行已达到重试上限。最后一次错误：\(lastError)"
+            } else {
+                "Tool 执行已达到重试上限。"
+            }
         case .missingExecutionReceipt:
             "任务已进入验证阶段，但缺少本机执行凭证，无法安全恢复。"
         case .invalidInterruptedPhase:

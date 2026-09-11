@@ -47,7 +47,11 @@ final class ReminderEventKitExecutor: ReminderExecuting {
             from: draft.dueAt
         )
         reminder.addAlarm(EKAlarm(absoluteDate: draft.dueAt))
-        try eventStore.save(reminder, commit: true)
+        do {
+            try eventStore.save(reminder, commit: true)
+        } catch {
+            throw mappedEventKitError(error)
+        }
 
         let identifier = reminder.calendarItemIdentifier
         guard !identifier.isEmpty else { throw ReminderToolError.missingIdentifier }
@@ -81,8 +85,24 @@ final class ReminderEventKitExecutor: ReminderExecuting {
     }
 
     private func ensureAccess() async throws {
-        let granted = try await eventStore.requestFullAccessToReminders()
+        let granted: Bool
+        do {
+            granted = try await eventStore.requestFullAccessToReminders()
+        } catch {
+            throw mappedEventKitError(error)
+        }
         guard granted else { throw ReminderToolError.accessDenied }
+    }
+
+    private func mappedEventKitError(_ error: any Error) -> any Error {
+        let cocoaError = error as NSError
+        guard cocoaError.domain == EKErrorDomain,
+              cocoaError.code == EKError.Code.internalFailure.rawValue else {
+            return error
+        }
+        return ReminderToolError.transientSystemFailure(
+            "提醒事项服务暂时不可用，请稍后重试。"
+        )
     }
 
     private func resolveCalendar(for draft: ReminderDraft) throws -> EKCalendar {

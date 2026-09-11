@@ -191,6 +191,26 @@ private struct TaskDetailView: View {
                 }
             }
 
+            if task.executionAttemptCount > 0 {
+                Section("执行恢复") {
+                    LabeledContent(
+                        "执行尝试",
+                        value: "\(task.executionAttemptCount) 次"
+                    )
+                    if let retryAt = task.nextExecutionRetryAt {
+                        LabeledContent(
+                            "下次重试",
+                            value: retryAt.formatted(date: .omitted, time: .standard)
+                        )
+                    }
+                    if let lastError = task.lastExecutionErrorMessage {
+                        Text("上一次失败：\(lastError)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             if task.status == .waitingForConfirmation {
                 Section("需要确认") {
                     Text("确认后才会请求系统权限并写入提醒事项。")

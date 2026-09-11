@@ -66,6 +66,13 @@ final class AgentRuntime {
         try resolve(task: task).tool.descriptor.supportsRetry
     }
 
+    func executionErrorDisposition(
+        _ error: any Error,
+        for task: AgentTask
+    ) throws -> ToolExecutionErrorDisposition {
+        try resolve(task: task).tool.executionErrorDisposition(error)
+    }
+
     func verify(
         receipt: ToolExecutionReceipt,
         for task: AgentTask

@@ -57,6 +57,16 @@ final class ReminderCreateTool: AgentTool {
         return ToolExecutionReceipt(payload: try JSONEncoder().encode(recovered))
     }
 
+    func executionErrorDisposition(_ error: any Error) -> ToolExecutionErrorDisposition {
+        guard let reminderError = error as? ReminderToolError else {
+            return .terminal
+        }
+        if case .transientSystemFailure = reminderError {
+            return .retryable
+        }
+        return .terminal
+    }
+
     func verify(
         receipt: ToolExecutionReceipt,
         argumentsJSON: String
