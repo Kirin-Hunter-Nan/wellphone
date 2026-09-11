@@ -5,6 +5,12 @@ struct PreparedToolRequest: Sendable {
     let task: PreparedAgentToolTask
 }
 
+struct AgentToolExecutionRequest: Sendable {
+    let capability: String
+    let argumentsJSON: String
+    let idempotencyKey: String
+}
+
 @MainActor
 final class AgentRuntime {
     private let registry: ToolRegistry
@@ -47,10 +53,25 @@ final class AgentRuntime {
     }
 
     func execute(task: AgentTask) async throws -> ToolExecutionReceipt {
+        try await execute(request: executionRequest(for: task))
+    }
+
+    func executionRequest(for task: AgentTask) throws -> AgentToolExecutionRequest {
         let resolved = try resolve(task: task)
-        return try await resolved.tool.execute(
+        return AgentToolExecutionRequest(
+            capability: resolved.tool.descriptor.capability,
             argumentsJSON: resolved.argumentsJSON,
             idempotencyKey: task.id.uuidString.lowercased()
+        )
+    }
+
+    func execute(request: AgentToolExecutionRequest) async throws -> ToolExecutionReceipt {
+        guard let tool = registry.tool(capability: request.capability) else {
+            throw AgentRuntimeError.unsupportedCapability(request.capability)
+        }
+        return try await tool.execute(
+            argumentsJSON: request.argumentsJSON,
+            idempotencyKey: request.idempotencyKey
         )
     }
 

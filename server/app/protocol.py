@@ -173,6 +173,10 @@ class TaskCheckpointSubmission(BaseModel):
         default=None,
         alias="cancellationRequestedAt",
     )
+    execution_deadline_at: datetime | None = Field(
+        default=None,
+        alias="executionDeadlineAt",
+    )
     occurred_at: datetime = Field(alias="occurredAt")
 
     @model_validator(mode="after")
@@ -192,6 +196,15 @@ class TaskCheckpointSubmission(BaseModel):
         ):
             raise ValueError(
                 "nextExecutionRetryAt requires a running execution with at least one attempt"
+            )
+        if self.execution_deadline_at is not None and (
+            self.status != "running"
+            or self.phase != "executing"
+            or self.execution_attempt_count == 0
+            or self.next_execution_retry_at is not None
+        ):
+            raise ValueError(
+                "executionDeadlineAt requires an active execution attempt"
             )
         return self
 

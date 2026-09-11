@@ -83,6 +83,7 @@ class PostgreSQLTaskCheckpointStore:
                     next_execution_retry_at TIMESTAMPTZ,
                     last_execution_error_message TEXT,
                     cancellation_requested_at TIMESTAMPTZ,
+                    execution_deadline_at TIMESTAMPTZ,
                     occurred_at TIMESTAMPTZ NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL,
                     PRIMARY KEY (conversation_id, task_id),
@@ -113,6 +114,12 @@ class PostgreSQLTaskCheckpointStore:
                 """
                 ALTER TABLE agent_task_snapshots
                     ADD COLUMN IF NOT EXISTS cancellation_requested_at TIMESTAMPTZ
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE agent_task_snapshots
+                    ADD COLUMN IF NOT EXISTS execution_deadline_at TIMESTAMPTZ
                 """
             )
 
@@ -218,10 +225,10 @@ class PostgreSQLTaskCheckpointStore:
                             status, phase, progress, detail, result_summary, error_message,
                             execution_attempt_count, next_execution_retry_at,
                             last_execution_error_message, cancellation_requested_at,
-                            occurred_at, updated_at
+                            execution_deadline_at, occurred_at, updated_at
                         ) VALUES (
                             %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                         )
                         ON CONFLICT (conversation_id, task_id) DO UPDATE
                         SET revision = EXCLUDED.revision,
@@ -237,6 +244,7 @@ class PostgreSQLTaskCheckpointStore:
                             next_execution_retry_at = EXCLUDED.next_execution_retry_at,
                             last_execution_error_message = EXCLUDED.last_execution_error_message,
                             cancellation_requested_at = EXCLUDED.cancellation_requested_at,
+                            execution_deadline_at = EXCLUDED.execution_deadline_at,
                             occurred_at = EXCLUDED.occurred_at,
                             updated_at = EXCLUDED.updated_at
                         WHERE agent_task_snapshots.revision < EXCLUDED.revision
@@ -258,6 +266,7 @@ class PostgreSQLTaskCheckpointStore:
                             checkpoint.next_execution_retry_at,
                             checkpoint.last_execution_error_message,
                             checkpoint.cancellation_requested_at,
+                            checkpoint.execution_deadline_at,
                             checkpoint.occurred_at,
                             now,
                         ),

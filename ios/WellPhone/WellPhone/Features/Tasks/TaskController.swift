@@ -18,6 +18,7 @@ final class TaskController {
     private let resultReporter: any ToolResultReporting
     private let checkpointReporter: any TaskCheckpointReporting
     private let executionRetryPolicy: ToolExecutionRetryPolicy
+    private let executionDeadlinePolicy: ToolExecutionDeadlinePolicy
     @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
@@ -39,7 +40,8 @@ final class TaskController {
         notifier: any TaskNotifying,
         resultReporter: any ToolResultReporting = DisabledToolResultReporter(),
         checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter(),
-        executionRetryPolicy: ToolExecutionRetryPolicy = .standard
+        executionRetryPolicy: ToolExecutionRetryPolicy = .standard,
+        executionDeadlinePolicy: ToolExecutionDeadlinePolicy = .standard
     ) {
         self.modelContext = modelContext
         self.runtime = runtime
@@ -47,6 +49,7 @@ final class TaskController {
         self.resultReporter = resultReporter
         self.checkpointReporter = checkpointReporter
         self.executionRetryPolicy = executionRetryPolicy
+        self.executionDeadlinePolicy = executionDeadlinePolicy
         refresh()
     }
 
@@ -310,8 +313,11 @@ final class TaskController {
     }
 
     private func recoverOrExecute(_ task: AgentTask) async throws -> ToolExecutionReceipt {
+        let deadlineExpired = task.executionDeadlineAt.map { $0 <= Date() } ?? false
         do {
             if let recovered = try await runtime.recoverExecution(task: task) {
+                task.executionDeadlineAt = nil
+                queueCheckpoint(for: task)
                 return recovered
             }
         } catch {
@@ -323,6 +329,10 @@ final class TaskController {
         }
 
         try throwIfCancellationRequested(task)
+        if deadlineExpired {
+            task.executionDeadlineAt = nil
+            throw TaskRecoveryError.executionDeadlineExceeded
+        }
         guard try runtime.supportsExecutionRetry(task: task) else {
             throw TaskRecoveryError.executionOutcomeUnknown
         }
@@ -337,11 +347,23 @@ final class TaskController {
             try throwIfCancellationRequested(task)
             task.executionAttemptCount += 1
             task.nextExecutionRetryAt = nil
+            task.executionDeadlineAt = Date().addingTimeInterval(
+                Double(executionDeadlinePolicy.attemptTimeoutNanoseconds) / 1_000_000_000
+            )
             queueCheckpoint(for: task)
 
             do {
-                return try await runtime.execute(task: task)
+                let receipt = try await executeWithinDeadline(task)
+                task.executionDeadlineAt = nil
+                return receipt
+            } catch TaskRecoveryError.executionDeadlineExceeded {
+                task.lastExecutionErrorMessage = (
+                    TaskRecoveryError.executionDeadlineExceeded.localizedDescription
+                )
+                queueCheckpoint(for: task)
+                return try await recoverTimedOutExecution(task)
             } catch {
+                task.executionDeadlineAt = nil
                 let disposition = try runtime.executionErrorDisposition(error, for: task)
                 guard supportsRetry,
                       disposition == .retryable else { throw error }
@@ -364,6 +386,45 @@ final class TaskController {
         throw TaskRecoveryError.executionRetriesExhausted(
             lastError: task.lastExecutionErrorMessage
         )
+    }
+
+    private func executeWithinDeadline(_ task: AgentTask) async throws -> ToolExecutionReceipt {
+        let timeout = executionDeadlinePolicy.attemptTimeoutNanoseconds
+        let executionRequest = try runtime.executionRequest(for: task)
+        return try await withThrowingTaskGroup(of: ToolExecutionReceipt.self) { group in
+            group.addTask { [runtime] in
+                try await runtime.execute(request: executionRequest)
+            }
+            group.addTask {
+                try await Task<Never, Never>.sleep(nanoseconds: timeout)
+                throw TaskRecoveryError.executionDeadlineExceeded
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw TaskRecoveryError.executionDeadlineExceeded
+            }
+            return first
+        }
+    }
+
+    private func recoverTimedOutExecution(
+        _ task: AgentTask
+    ) async throws -> ToolExecutionReceipt {
+        do {
+            if let recovered = try await runtime.recoverExecution(task: task) {
+                task.executionDeadlineAt = nil
+                queueCheckpoint(for: task)
+                return recovered
+            }
+        } catch {
+            task.executionDeadlineAt = nil
+            throw TaskRecoveryError.executionOutcomeUnknownAfterTimeout(
+                recoveryError: error.localizedDescription
+            )
+        }
+        task.executionDeadlineAt = nil
+        try throwIfCancellationRequested(task)
+        throw TaskRecoveryError.executionDeadlineExceeded
     }
 
     private func waitForScheduledRetry(_ task: AgentTask) async throws {
@@ -421,6 +482,7 @@ final class TaskController {
         task.phase = .cancelled
         task.progress = nil
         task.nextExecutionRetryAt = nil
+        task.executionDeadlineAt = nil
         task.resultSummary = summary
         touchAndSave(task)
         queueCheckpoint(for: task)
@@ -433,6 +495,7 @@ final class TaskController {
     ) {
         task.executionReceiptData = receipt.payload
         task.nextExecutionRetryAt = nil
+        task.executionDeadlineAt = nil
         completeStep(2, for: task)
         startStep(3, for: task)
         task.phase = .verifying
@@ -482,6 +545,7 @@ final class TaskController {
         task.phase = .failed
         task.progress = nil
         task.nextExecutionRetryAt = nil
+        task.executionDeadlineAt = nil
         task.errorMessage = error.localizedDescription
         touchAndSave(task)
         queueCheckpoint(for: task)
@@ -571,6 +635,7 @@ final class TaskController {
             nextExecutionRetryAt: task.nextExecutionRetryAt,
             lastExecutionErrorMessage: task.lastExecutionErrorMessage,
             cancellationRequestedAt: task.cancellationRequestedAt,
+            executionDeadlineAt: task.executionDeadlineAt,
             occurredAt: task.updatedAt
         )
     }
@@ -667,6 +732,8 @@ final class TaskController {
 
 private enum TaskRecoveryError: LocalizedError {
     case cancellationRequested
+    case executionDeadlineExceeded
+    case executionOutcomeUnknownAfterTimeout(recoveryError: String)
     case executionOutcomeUnknown
     case executionRetriesExhausted(lastError: String?)
     case missingExecutionReceipt
@@ -676,6 +743,10 @@ private enum TaskRecoveryError: LocalizedError {
         switch self {
         case .cancellationRequested:
             "任务已按你的请求安全停止，没有开始新的系统写入。"
+        case .executionDeadlineExceeded:
+            "Tool 执行已超时，且没有找到可验证的系统写入结果；为避免重复执行，任务不会自动重放。"
+        case .executionOutcomeUnknownAfterTimeout(let recoveryError):
+            "Tool 执行已超时，恢复检查也未能完成：\(recoveryError)"
         case .executionOutcomeUnknown:
             "App 在系统写入阶段中断，无法确认操作结果。为避免重复写入，本次任务不会自动重试。"
         case .executionRetriesExhausted(let lastError):

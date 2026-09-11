@@ -472,6 +472,82 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func timedOutExecutionRecoversAndVerifiesAnExistingWrite() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor(
+            recoveredReminder: CreatedReminder(
+                identifier: "recovered-after-timeout",
+                listTitle: "提醒事项"
+            ),
+            createDelayNanoseconds: 1_000_000_000
+        )
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: executor),
+            notifier: DisabledTaskNotifier(),
+            executionRetryPolicy: .immediateTesting,
+            executionDeadlinePolicy: ToolExecutionDeadlinePolicy(
+                attemptTimeoutNanoseconds: 10_000_000
+            )
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_timeout_recover",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.confirmTask(taskID: task.id)
+
+        #expect(executor.createCount == 1)
+        #expect(executor.recoverCount == 1)
+        #expect(executor.verifyCount == 1)
+        #expect(task.executionAttemptCount == 1)
+        #expect(task.executionDeadlineAt == nil)
+        #expect(task.status == .completed)
+    }
+
+    @Test @MainActor
+    func appRestartDoesNotReplayAnExpiredExecutionWithoutAReceipt() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_expired_restart",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+        task.status = .running
+        task.phase = .executing
+        task.executionAttemptCount = 1
+        task.executionDeadlineAt = Date().addingTimeInterval(-1)
+        try container.mainContext.save()
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        await restoredController.recoverInterruptedTasks()
+
+        #expect(executor.recoverCount == 1)
+        #expect(executor.createCount == 0)
+        #expect(executor.verifyCount == 0)
+        #expect(task.executionDeadlineAt == nil)
+        #expect(task.status == .failed)
+        #expect(task.errorMessage?.contains("超时") == true)
+    }
+
+    @Test @MainActor
     func verifiedToolResultAddsServerFollowUpToChatOnce() async throws {
         let container = try makeContainer()
         let context = container.mainContext

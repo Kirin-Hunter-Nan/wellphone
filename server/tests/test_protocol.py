@@ -126,3 +126,21 @@ def test_checkpoint_fingerprint_keeps_legacy_zero_attempts_compatible() -> None:
     assert stopping.semantic_payload()["cancellationRequestedAt"] == (
         "2026-09-11T08:00:30Z"
     )
+
+    executing = TaskCheckpointSubmission.model_validate({
+        **payload,
+        "executionAttemptCount": 1,
+        "executionDeadlineAt": "2026-09-11T08:01:00Z",
+    })
+    assert executing.semantic_payload()["executionDeadlineAt"] == (
+        "2026-09-11T08:01:00Z"
+    )
+
+    with pytest.raises(ValidationError, match="active execution attempt"):
+        TaskCheckpointSubmission.model_validate({
+            **payload,
+            "status": "completed",
+            "phase": "completed",
+            "executionAttemptCount": 1,
+            "executionDeadlineAt": "2026-09-11T08:01:00Z",
+        })

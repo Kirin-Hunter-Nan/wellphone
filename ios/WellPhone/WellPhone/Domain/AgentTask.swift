@@ -74,6 +74,7 @@ final class AgentTask {
     var nextExecutionRetryAt: Date?
     var lastExecutionErrorMessage: String?
     var cancellationRequestedAt: Date?
+    var executionDeadlineAt: Date?
     var resultReportStateRawValue: String?
     var resultReportError: String?
     var checkpointRevisionValue: Int?
@@ -135,6 +136,7 @@ final class AgentTask {
         nextExecutionRetryAt: Date? = nil,
         lastExecutionErrorMessage: String? = nil,
         cancellationRequestedAt: Date? = nil,
+        executionDeadlineAt: Date? = nil,
         resultReportState: ToolResultReportState? = nil,
         resultReportError: String? = nil,
         checkpointRevision: Int? = nil,
@@ -163,6 +165,7 @@ final class AgentTask {
         self.nextExecutionRetryAt = nextExecutionRetryAt
         self.lastExecutionErrorMessage = lastExecutionErrorMessage
         self.cancellationRequestedAt = cancellationRequestedAt
+        self.executionDeadlineAt = executionDeadlineAt
         self.resultReportStateRawValue = resultReportState?.rawValue
         self.resultReportError = resultReportError
         self.checkpointRevisionValue = checkpointRevision

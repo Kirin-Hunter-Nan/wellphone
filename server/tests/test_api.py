@@ -682,3 +682,33 @@ def test_accepts_persisted_task_cancellation_request() -> None:
 
     assert response.status_code == 200
     assert response.json()["applied"] is True
+
+
+def test_accepts_active_execution_deadline() -> None:
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+    )
+    endpoint = (
+        "/v1/conversations/39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7/task-checkpoints"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(endpoint, json={
+            "requestId": "checkpoint_execution_deadline",
+            "protocolVersion": "1.0",
+            "taskId": "6ea0b625-4c52-49f0-8b0b-98cfefc34cf3",
+            "revision": 2,
+            "toolCallId": "call_deadline",
+            "capability": "reminder.create",
+            "status": "running",
+            "phase": "executing",
+            "progress": 0.55,
+            "executionAttemptCount": 1,
+            "executionDeadlineAt": "2026-09-11T08:01:00Z",
+            "occurredAt": "2026-09-11T08:00:30Z",
+        })
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is True

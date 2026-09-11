@@ -203,6 +203,12 @@ private struct TaskDetailView: View {
                             value: retryAt.formatted(date: .omitted, time: .standard)
                         )
                     }
+                    if let deadlineAt = task.executionDeadlineAt {
+                        LabeledContent(
+                            "本次截止",
+                            value: deadlineAt.formatted(date: .omitted, time: .standard)
+                        )
+                    }
                     if let lastError = task.lastExecutionErrorMessage {
                         Text("上一次失败：\(lastError)")
                             .font(.footnote)
