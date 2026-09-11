@@ -100,6 +100,15 @@ final class TaskController {
         conversationID: UUID,
         sourceMessageID: UUID?
     ) async throws -> AgentTask {
+        if let existingTask = tasks.first(where: {
+            $0.conversationID == conversationID && $0.toolCallID == request.id
+        }) {
+            guard existingTask.capability == request.capability,
+                  existingTask.argumentsJSON == request.arguments else {
+                throw AgentRuntimeError.conflictingToolRequest(request.id)
+            }
+            return existingTask
+        }
         let preparedRequest = try runtime.prepare(request: request)
         let prepared = preparedRequest.task
         let requiresConfirmation = preparedRequest.descriptor.confirmationPolicy == .always

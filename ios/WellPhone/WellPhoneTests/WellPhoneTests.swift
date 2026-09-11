@@ -20,7 +20,8 @@ struct WellPhoneTests {
 
         for try await event in gateway.streamReply(
             to: prompt,
-            conversationID: UUID()
+            conversationID: UUID(),
+            requestID: "req_demo"
         ) {
             if case .textDelta(let chunk) = event {
                 reply += chunk
@@ -128,6 +129,54 @@ struct WellPhoneTests {
         controller.selectConversation(older)
         #expect(controller.activeConversationID == older.id)
         #expect(controller.messages.first?.text == "旧消息")
+    }
+
+    @Test @MainActor
+    func conversationRetryReusesTheOriginalRequestID() async throws {
+        let container = try makeContainer()
+        let gateway = RequestIDRecordingGateway()
+        let taskController = TaskController(modelContext: container.mainContext)
+        let controller = ConversationController(
+            modelContext: container.mainContext,
+            gateway: gateway,
+            taskController: taskController
+        )
+        controller.draft = "测试幂等请求"
+
+        controller.sendDraft()
+        for _ in 0..<100 where controller.isGenerating {
+            await Task.yield()
+        }
+        controller.retryLastResponse()
+        for _ in 0..<100 where controller.isGenerating {
+            await Task.yield()
+        }
+
+        let requestIDs = await gateway.requestIDs
+        #expect(requestIDs.count == 2)
+        #expect(Set(requestIDs).count == 1)
+        #expect(controller.messages.first(where: { $0.role == .user })?.responseRequestID == requestIDs.first)
+    }
+
+    @Test @MainActor
+    func modelGatewayOnlyRetriesAnActiveIdempotentRequest() {
+        #expect(ModelGatewayRetryPolicy.shouldRetry(
+            statusCode: 503,
+            errorCode: "chat_request_in_progress",
+            retryCount: 0
+        ))
+        #expect(!ModelGatewayRetryPolicy.shouldRetry(
+            statusCode: 503,
+            errorCode: "database_unavailable",
+            retryCount: 0
+        ))
+        #expect(!ModelGatewayRetryPolicy.shouldRetry(
+            statusCode: 503,
+            errorCode: "chat_request_in_progress",
+            retryCount: ModelGatewayRetryPolicy.maximumInProgressRetries
+        ))
+        #expect(ModelGatewayRetryPolicy.delaySeconds(retryAfter: "2") == 2)
+        #expect(ModelGatewayRetryPolicy.delaySeconds(retryAfter: "30") == 5)
     }
 
     @Test @MainActor
@@ -291,6 +340,36 @@ struct WellPhoneTests {
         #expect(request.task.stepTitles.verification == "回读并验证结果")
         #expect(executor.createCount == 0)
         #expect(executor.verifyCount == 0)
+    }
+
+    @Test @MainActor
+    func repeatedToolRequestReusesTheExistingTask() async throws {
+        let container = try makeContainer()
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: FakeReminderExecutor()
+        )
+        let conversationID = UUID()
+        let request = AgentToolRequest(
+            id: "call_replayed",
+            capability: "reminder.create",
+            arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+        )
+
+        let first = try await controller.prepareTool(
+            from: request,
+            conversationID: conversationID,
+            sourceMessageID: UUID()
+        )
+        let replay = try await controller.prepareTool(
+            from: request,
+            conversationID: conversationID,
+            sourceMessageID: UUID()
+        )
+
+        #expect(first.id == replay.id)
+        #expect(controller.tasks.filter { $0.toolCallID == "call_replayed" }.count == 1)
+        #expect(controller.steps(for: first).count == 4)
     }
 
     @Test @MainActor
@@ -464,9 +543,11 @@ private actor ReplyingToolResultReporter: ToolResultReporting {
 private struct ToolRequestGateway: ModelGateway {
     func streamReply(
         to messages: [ChatPromptMessage],
-        conversationID: UUID
+        conversationID: UUID,
+        requestID: String
     ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
-        AsyncThrowingStream { continuation in
+        _ = requestID
+        return AsyncThrowingStream { continuation in
             continuation.yield(.toolRequest(AgentToolRequest(
                 id: "call_inline_card",
                 capability: "reminder.create",
@@ -475,5 +556,30 @@ private struct ToolRequestGateway: ModelGateway {
             continuation.yield(.done)
             continuation.finish()
         }
+    }
+}
+
+private actor RequestIDRecordingGateway: ModelGateway {
+    private(set) var requestIDs: [String] = []
+
+    nonisolated func streamReply(
+        to messages: [ChatPromptMessage],
+        conversationID: UUID,
+        requestID: String
+    ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
+        _ = messages
+        _ = conversationID
+        return AsyncThrowingStream { continuation in
+            Task {
+                await self.record(requestID)
+                continuation.yield(.textDelta("收到"))
+                continuation.yield(.done)
+                continuation.finish()
+            }
+        }
+    }
+
+    private func record(_ requestID: String) {
+        requestIDs.append(requestID)
     }
 }

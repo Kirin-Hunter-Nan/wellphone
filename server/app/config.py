@@ -21,6 +21,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8787
     max_request_bytes: int = 26_214_400
+    chat_request_lease_seconds: int = 150
     continuation_lease_seconds: int = 150
     database_url: str = "postgresql://wellphone:wellphone-local-dev@127.0.0.1:5432/wellphone"
 
@@ -46,6 +47,11 @@ def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
             environment.get("MAX_REQUEST_BYTES"),
             26_214_400,
             "MAX_REQUEST_BYTES",
+        ),
+        chat_request_lease_seconds=_positive_integer(
+            environment.get("CHAT_REQUEST_LEASE_SECONDS"),
+            150,
+            "CHAT_REQUEST_LEASE_SECONDS",
         ),
         continuation_lease_seconds=_positive_integer(
             environment.get("CONTINUATION_LEASE_SECONDS"),

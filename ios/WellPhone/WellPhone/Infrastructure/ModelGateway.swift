@@ -20,7 +20,8 @@ enum ModelGatewayEvent: Equatable, Sendable {
 protocol ModelGateway: Sendable {
     func streamReply(
         to messages: [ChatPromptMessage],
-        conversationID: UUID
+        conversationID: UUID,
+        requestID: String
     ) -> AsyncThrowingStream<ModelGatewayEvent, any Error>
 }
 
@@ -29,8 +30,10 @@ protocol ModelGateway: Sendable {
 struct DemoModelGateway: ModelGateway {
     func streamReply(
         to messages: [ChatPromptMessage],
-        conversationID: UUID
+        conversationID: UUID,
+        requestID: String
     ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
+        _ = requestID
         let latestInput = messages.last(where: { $0.role == .user })?.content ?? ""
         let response = responseText(for: latestInput)
 

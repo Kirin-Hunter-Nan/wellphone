@@ -80,6 +80,7 @@ final class AgentRuntime {
 
 enum AgentRuntimeError: LocalizedError {
     case unsupportedCapability(String)
+    case conflictingToolRequest(String)
     case missingCapability
     case missingArguments
 
@@ -87,6 +88,8 @@ enum AgentRuntimeError: LocalizedError {
         switch self {
         case .unsupportedCapability(let capability):
             "任务使用了尚未注册的能力：\(capability)"
+        case .conflictingToolRequest(let toolCallID):
+            "工具请求 \(toolCallID) 与已保存任务不一致。"
         case .missingCapability:
             "任务缺少工具能力标识。"
         case .missingArguments:

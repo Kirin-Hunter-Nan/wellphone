@@ -76,7 +76,7 @@ class DeviceContext(BaseModel):
 class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    request_id: str = Field(alias="requestId", min_length=1)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=200)
     protocol_version: Literal["1.0"] = Field(alias="protocolVersion")
     messages: list[ChatMessage] = Field(min_length=1, max_length=100)
     device_context: DeviceContext = Field(alias="deviceContext")

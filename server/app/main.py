@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
+from contextvars import Context
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -8,6 +11,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
+from app.chat_store import (
+    ChatRequestStore,
+    InMemoryChatRequestStore,
+    PostgreSQLChatRequestStore,
+)
 from app.config import Settings, load_settings
 from app.protocol import ChatRequest, PROTOCOL_VERSION, ToolResultSubmission
 from app.providers.base import ModelProvider, ProviderError, ProviderToolCallContext
@@ -24,6 +32,7 @@ def create_app(
     settings: Settings | None = None,
     provider: ModelProvider | None = None,
     result_store: ToolResultStore | None = None,
+    chat_request_store: ChatRequestStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -32,19 +41,29 @@ def create_app(
         resolved_result_store = result_store or PostgreSQLToolResultStore(
             resolved_settings.database_url
         )
+        resolved_chat_request_store = chat_request_store
+        if resolved_chat_request_store is None:
+            resolved_chat_request_store = (
+                InMemoryChatRequestStore()
+                if result_store is not None
+                else PostgreSQLChatRequestStore(resolved_settings.database_url)
+            )
         await resolved_result_store.initialize()
+        await resolved_chat_request_store.initialize()
         app.state.settings = resolved_settings
         app.state.provider = resolved_provider
         app.state.result_store = resolved_result_store
+        app.state.chat_request_store = resolved_chat_request_store
         try:
             yield
         finally:
             await resolved_provider.close()
+            await resolved_chat_request_store.close()
             await resolved_result_store.close()
 
     application = FastAPI(
         title="WellPhone AI Backend",
-        version="0.3.0",
+        version="0.4.0",
         lifespan=lifespan,
     )
 
@@ -52,7 +71,8 @@ def create_app(
     async def health(request: Request):
         active_settings: Settings = request.app.state.settings
         active_store: ToolResultStore = request.app.state.result_store
-        if not await active_store.is_healthy():
+        active_chat_store: ChatRequestStore = request.app.state.chat_request_store
+        if not await active_store.is_healthy() or not await active_chat_store.is_healthy():
             return _error(503, "database_unavailable", "Database is unavailable")
         return {
             "status": "ok",
@@ -73,6 +93,41 @@ def create_app(
 
         active_provider: ModelProvider = request.app.state.provider
         active_store: ToolResultStore = request.app.state.result_store
+        active_chat_store: ChatRequestStore = request.app.state.chat_request_store
+
+        claim = await active_chat_store.claim(
+            conversation_id,
+            chat_request,
+            lease_seconds=active_settings.chat_request_lease_seconds,
+        )
+        if claim.status == "conflict":
+            return _error(
+                409,
+                "chat_request_conflict",
+                "The requestId has already been used with different chat content",
+            )
+        if claim.status == "processing":
+            response = _error(
+                503,
+                "chat_request_in_progress",
+                "这轮回复正在生成，请稍后重试。",
+            )
+            response.headers["Retry-After"] = "2"
+            return response
+        if claim.status == "completed":
+            async def replay_events() -> AsyncIterator[str]:
+                for event in claim.events:
+                    yield event
+
+            return StreamingResponse(
+                replay_events(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "X-Accel-Buffering": "no",
+                    "X-WellPhone-Replayed": "true",
+                },
+            )
 
         async def save_tool_call_context(context: ProviderToolCallContext) -> None:
             await active_store.save_tool_call_context(conversation_id, context)
@@ -83,14 +138,51 @@ def create_app(
                 on_tool_call=save_tool_call_context,
             )
         except ProviderError:
+            await active_chat_store.fail(
+                conversation_id,
+                chat_request.request_id,
+                "model_upstream_error",
+            )
             return _error(
                 502,
                 "model_upstream_error",
                 "模型服务暂时不可用，请稍后重试。",
             )
+        except BaseException:
+            await _finish_store_operation(
+                active_chat_store.fail(
+                    conversation_id,
+                    chat_request.request_id,
+                    "provider_open_interrupted",
+                )
+            )
+            raise
+
+        async def persist_events() -> AsyncIterator[str]:
+            events: list[str] = []
+            try:
+                async for event in stream.events():
+                    events.append(event)
+                    yield event
+                await _finish_store_operation(
+                    active_chat_store.complete(
+                        conversation_id,
+                        chat_request,
+                        tuple(events),
+                    )
+                )
+            except BaseException:
+                await _finish_store_operation(
+                    active_chat_store.fail(
+                        conversation_id,
+                        chat_request.request_id,
+                        "response_stream_interrupted",
+                    )
+                )
+                raise
 
         return StreamingResponse(
-            stream.events(),
+            persist_events(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -172,10 +264,12 @@ def create_app(
                     "设备操作结果已经保存，但模型暂时无法生成最终回复。",
                 )
             except BaseException:
-                await active_store.fail_continuation(
-                    conversation_id,
-                    submission.tool_call_id,
-                    "continuation_interrupted",
+                await _finish_store_operation(
+                    active_store.fail_continuation(
+                        conversation_id,
+                        submission.tool_call_id,
+                        "continuation_interrupted",
+                    )
                 )
                 raise
         if existing_reply is None:
@@ -193,6 +287,17 @@ def create_app(
         }
 
     return application
+
+
+async def _finish_store_operation(operation: Awaitable[None]) -> None:
+    """Let persistence cleanup finish even when the request task is cancelled."""
+    task = asyncio.create_task(operation, context=Context())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Starlette cancels the whole request scope after a client disconnects.
+        # The detached task must be allowed to commit after this coroutine exits.
+        return
 
 
 def _validation_message(error: ValidationError) -> str:

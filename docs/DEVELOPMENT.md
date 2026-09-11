@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.1 最小 Agent 闭环已完成：Python 后端协议适配、capability 请求、参数校验、确认卡片、EventKit 写入、回读验证、PostgreSQL 结果持久化、数据库租约恢复及模型续接回复已接通 |
+| 当前阶段 | V0.1 最小 Agent 闭环已完成，V0.2 已启动：聊天请求、Tool Result 和模型续接均具备 PostgreSQL 幂等键与数据库租约，客户端重试复用稳定 requestId |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 
@@ -497,7 +497,11 @@ struct AuthorizationGrant: Codable, Sendable {
 POST /v1/conversations/{id}/messages
 ```
 
-请求包含 `protocolVersion`、`requestId`、设备 locale/time zone、文本、历史摘要和附件引用。前台聊天通过 WellPhone SSE 事件接收 `assistant.delta`、`tool.requested` 和完成状态；模型厂商的流式格式必须在 Python Provider Adapter 内终止。后台任务应优先使用普通请求或可恢复的服务端 Job，避免依赖长连接。
+请求包含 `protocolVersion`、`requestId`、设备 locale/time zone、文本、历史摘要和附件引用。前台聊天通过 WellPhone SSE 事件接收 `assistant.delta`、`tool.requested` 和完成状态；模型厂商的流式格式必须在 Python Provider Adapter 内终止。每轮用户消息在 SwiftData 中保存稳定的 `requestId`，停止、断线或手动重试时继续使用同一个值。
+
+服务端以 `(conversation_id, request_id)` 作为 PostgreSQL 幂等键，并保存请求内容指纹、执行状态、有限租约和完整 SSE 响应。首次请求领取 `processing` 租约；已完成的相同请求直接回放原始事件，不再次调用 Provider；正在处理的并发请求返回 `503 chat_request_in_progress`；同一 ID 携带不同内容返回 `409 chat_request_conflict`。Provider 建连或响应流中断时，服务端通过脱离 HTTP 取消域的持久化任务释放领取；客户端对短暂的 `chat_request_in_progress` 遵循 `Retry-After` 自动重试。客户端收到回放的同一个 `tool.requested` 时按 `(conversationID, toolCallID)` 复用现有任务。
+
+后台任务应优先使用普通请求或可恢复的服务端 Job，避免依赖长连接。当前请求仍携带完整对话历史以保持协议兼容；后续阶段再将权威对话历史和上下文裁剪迁移到服务端。
 
 ### 12.2 Tool 结果
 

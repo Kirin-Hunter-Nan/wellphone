@@ -4,8 +4,9 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 
+from app.chat_store import InMemoryChatRequestStore
 from app.config import Settings
-from app.main import create_app
+from app.main import _finish_store_operation, create_app
 from app.postgres_store import InMemoryToolResultStore
 from app.protocol import (
     ChatRequest,
@@ -24,8 +25,10 @@ class FakeStream:
 
 
 class FakeProvider:
-    request: ChatRequest | None = None
-    continuation_count = 0
+    def __init__(self) -> None:
+        self.request: ChatRequest | None = None
+        self.open_count = 0
+        self.continuation_count = 0
 
     async def open_reply(
         self,
@@ -35,6 +38,7 @@ class FakeProvider:
     ) -> FakeStream:
         del on_tool_call
         self.request = request
+        self.open_count += 1
         return FakeStream()
 
     async def continue_reply(
@@ -61,6 +65,21 @@ class FailOnceContinuationProvider(FakeProvider):
             raise ProviderError(502, "temporary failure")
         assert context.tool_call_id == result.tool_call_id
         return "提醒事项已经成功创建。"
+
+
+class FailOnceOpenProvider(FakeProvider):
+    async def open_reply(
+        self,
+        request: ChatRequest,
+        *,
+        on_tool_call: ToolCallContextSink | None = None,
+    ) -> FakeStream:
+        del on_tool_call
+        self.request = request
+        self.open_count += 1
+        if self.open_count == 1:
+            raise ProviderError(502, "temporary failure")
+        return FakeStream()
 
 
 class UnhealthyResultStore(InMemoryToolResultStore):
@@ -110,6 +129,124 @@ def test_health_and_message_stream() -> None:
     assert response.headers["content-type"].startswith("text/event-stream")
     assert '"type":"assistant.delta"' in response.text
     assert provider.request is not None
+
+
+def test_replays_completed_chat_request_without_calling_provider_again() -> None:
+    provider = FakeProvider()
+    app = create_app(
+        settings=settings(),
+        provider=provider,
+        result_store=InMemoryToolResultStore(),
+    )
+    endpoint = "/v1/conversations/39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7/messages"
+    payload = {
+        "requestId": "req_replay",
+        "protocolVersion": "1.0",
+        "messages": [{"role": "user", "content": "你好"}],
+        "deviceContext": {
+            "locale": "zh-CN",
+            "timeZone": "Asia/Shanghai",
+            "capabilitySetVersion": "ios-v1",
+        },
+    }
+
+    with TestClient(app) as client:
+        first = client.post(endpoint, json=payload)
+        replay = client.post(endpoint, json=payload)
+        conflict = client.post(
+            endpoint,
+            json={
+                **payload,
+                "messages": [{"role": "user", "content": "不同内容"}],
+            },
+        )
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.text == first.text
+    assert replay.headers["x-wellphone-replayed"] == "true"
+    assert provider.open_count == 1
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "chat_request_conflict"
+
+
+def test_failed_chat_request_releases_claim_for_same_request_id_retry() -> None:
+    provider = FailOnceOpenProvider()
+    app = create_app(
+        settings=settings(),
+        provider=provider,
+        result_store=InMemoryToolResultStore(),
+    )
+    endpoint = "/v1/conversations/49fcd9e0-e03e-4ed9-a22e-b92079c15a22/messages"
+    payload = {
+        "requestId": "req_retry",
+        "protocolVersion": "1.0",
+        "messages": [{"role": "user", "content": "你好"}],
+        "deviceContext": {
+            "locale": "zh-CN",
+            "timeZone": "Asia/Shanghai",
+            "capabilitySetVersion": "ios-v1",
+        },
+    }
+
+    with TestClient(app) as client:
+        failed = client.post(endpoint, json=payload)
+        retried = client.post(endpoint, json=payload)
+
+    assert failed.status_code == 502
+    assert retried.status_code == 200
+    assert provider.open_count == 2
+
+
+def test_rejects_duplicate_chat_request_while_lease_is_active() -> None:
+    conversation_id = UUID("59fcd9e0-e03e-4ed9-a22e-b92079c15a33")
+    chat_store = InMemoryChatRequestStore()
+    request = ChatRequest.model_validate({
+        "requestId": "req_processing",
+        "protocolVersion": "1.0",
+        "messages": [{"role": "user", "content": "你好"}],
+        "deviceContext": {
+            "locale": "zh-CN",
+            "timeZone": "Asia/Shanghai",
+            "capabilitySetVersion": "ios-v1",
+        },
+    })
+    asyncio.run(chat_store.claim(conversation_id, request, lease_seconds=150))
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+        chat_request_store=chat_store,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json=request.model_dump(mode="json", by_alias=True),
+        )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "2"
+    assert response.json()["error"]["code"] == "chat_request_in_progress"
+
+
+def test_persistence_cleanup_survives_request_cancellation() -> None:
+    cleanup_completed = False
+
+    async def cleanup() -> None:
+        nonlocal cleanup_completed
+        await asyncio.sleep(0)
+        cleanup_completed = True
+
+    async def cancel_during_cleanup() -> None:
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        asyncio.get_running_loop().call_soon(current_task.cancel)
+        await _finish_store_operation(cleanup())
+        await asyncio.sleep(0)
+
+    asyncio.run(cancel_during_cleanup())
+    assert cleanup_completed is True
 
 
 def test_rejects_legacy_request_without_protocol_context() -> None:

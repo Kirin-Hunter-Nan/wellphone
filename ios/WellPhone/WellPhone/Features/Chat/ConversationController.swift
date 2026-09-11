@@ -47,7 +47,8 @@ final class ConversationController {
             conversationID: activeConversation.id,
             role: .user,
             text: text,
-            deliveryState: .sent
+            deliveryState: .sent,
+            responseRequestID: UUID().uuidString.lowercased()
         )
         modelContext.insert(message)
         messages.append(message)
@@ -93,7 +94,10 @@ final class ConversationController {
     }
 
     private func startReply(in activeConversation: Conversation) {
-        let sourceMessageID = messages.last(where: { $0.role == .user })?.id
+        guard let sourceMessage = messages.last(where: { $0.role == .user }) else { return }
+        let sourceMessageID = sourceMessage.id
+        let requestID = sourceMessage.responseRequestID ?? UUID().uuidString.lowercased()
+        sourceMessage.responseRequestID = requestID
         let prompt = messages.map {
             ChatPromptMessage(role: $0.role, content: $0.text)
         }
@@ -112,7 +116,8 @@ final class ConversationController {
             do {
                 for try await event in gateway.streamReply(
                     to: prompt,
-                    conversationID: activeConversation.id
+                    conversationID: activeConversation.id,
+                    requestID: requestID
                 ) {
                     guard self != nil else { return }
                     switch event {
