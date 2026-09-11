@@ -50,6 +50,7 @@ struct WellPhoneApp: App {
                 .environment(conversationController)
                 .environment(taskController)
                 .task {
+                    await taskController.flushPendingCheckpoints()
                     await taskController.flushPendingResultReports()
                 }
         }

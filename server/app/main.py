@@ -18,13 +18,24 @@ from app.chat_store import (
     PostgreSQLChatRequestStore,
 )
 from app.config import Settings, load_settings
-from app.protocol import ChatRequest, PROTOCOL_VERSION, ToolResultSubmission
+from app.protocol import (
+    ChatRequest,
+    PROTOCOL_VERSION,
+    TaskCheckpointSubmission,
+    ToolResultSubmission,
+)
 from app.providers.base import ModelProvider, ProviderError, ProviderToolCallContext
 from app.providers.qwen import QwenProvider
 from app.postgres_store import (
     PostgreSQLToolResultStore,
     ToolResultConflictError,
     ToolResultStore,
+)
+from app.task_store import (
+    InMemoryTaskCheckpointStore,
+    PostgreSQLTaskCheckpointStore,
+    TaskCheckpointConflictError,
+    TaskCheckpointStore,
 )
 
 
@@ -34,6 +45,7 @@ def create_app(
     provider: ModelProvider | None = None,
     result_store: ToolResultStore | None = None,
     chat_request_store: ChatRequestStore | None = None,
+    task_checkpoint_store: TaskCheckpointStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -49,22 +61,32 @@ def create_app(
                 if result_store is not None
                 else PostgreSQLChatRequestStore(resolved_settings.database_url)
             )
+        resolved_task_checkpoint_store = task_checkpoint_store
+        if resolved_task_checkpoint_store is None:
+            resolved_task_checkpoint_store = (
+                InMemoryTaskCheckpointStore()
+                if result_store is not None
+                else PostgreSQLTaskCheckpointStore(resolved_settings.database_url)
+            )
         await resolved_result_store.initialize()
         await resolved_chat_request_store.initialize()
+        await resolved_task_checkpoint_store.initialize()
         app.state.settings = resolved_settings
         app.state.provider = resolved_provider
         app.state.result_store = resolved_result_store
         app.state.chat_request_store = resolved_chat_request_store
+        app.state.task_checkpoint_store = resolved_task_checkpoint_store
         try:
             yield
         finally:
             await resolved_provider.close()
+            await resolved_task_checkpoint_store.close()
             await resolved_chat_request_store.close()
             await resolved_result_store.close()
 
     application = FastAPI(
         title="WellPhone AI Backend",
-        version="0.5.0",
+        version="0.6.0",
         lifespan=lifespan,
     )
 
@@ -73,7 +95,12 @@ def create_app(
         active_settings: Settings = request.app.state.settings
         active_store: ToolResultStore = request.app.state.result_store
         active_chat_store: ChatRequestStore = request.app.state.chat_request_store
-        if not await active_store.is_healthy() or not await active_chat_store.is_healthy():
+        active_task_store: TaskCheckpointStore = request.app.state.task_checkpoint_store
+        if (
+            not await active_store.is_healthy()
+            or not await active_chat_store.is_healthy()
+            or not await active_task_store.is_healthy()
+        ):
             return _error(503, "database_unavailable", "Database is unavailable")
         return {
             "status": "ok",
@@ -325,6 +352,31 @@ def create_app(
             "duplicate": not inserted,
             "continuationStatus": "completed",
             "assistantMessage": existing_reply,
+            "protocolVersion": PROTOCOL_VERSION,
+        }
+
+    @application.post("/v1/conversations/{conversation_id}/task-checkpoints")
+    async def submit_task_checkpoint(conversation_id: UUID, request: Request):
+        active_settings: Settings = request.app.state.settings
+        body_or_error = await _read_body(request, active_settings.max_request_bytes)
+        if isinstance(body_or_error, JSONResponse):
+            return body_or_error
+        try:
+            checkpoint = TaskCheckpointSubmission.model_validate_json(body_or_error)
+        except ValidationError as error:
+            return _error(400, "invalid_request", _validation_message(error))
+
+        active_task_store: TaskCheckpointStore = request.app.state.task_checkpoint_store
+        try:
+            recorded = await active_task_store.record(conversation_id, checkpoint)
+        except TaskCheckpointConflictError as error:
+            return _error(409, "task_checkpoint_conflict", str(error))
+        return {
+            "accepted": True,
+            "duplicate": recorded.duplicate,
+            "applied": recorded.applied,
+            "currentRevision": recorded.current_revision,
+            "gap": recorded.gap,
             "protocolVersion": PROTOCOL_VERSION,
         }
 

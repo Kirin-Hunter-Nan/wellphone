@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -126,6 +127,50 @@ class ToolResultSubmission(BaseModel):
             raise ValueError("A failed Tool result requires error data")
         if self.status != "failed" and self.error is not None:
             raise ValueError("Only failed Tool results may include error data")
+        return self
+
+    def semantic_payload(self) -> dict[str, object]:
+        return self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"request_id"},
+            exclude_none=True,
+        )
+
+
+class TaskCheckpointSubmission(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    request_id: str = Field(alias="requestId", min_length=1, max_length=200)
+    protocol_version: Literal["1.0"] = Field(alias="protocolVersion")
+    task_id: UUID = Field(alias="taskId")
+    revision: int = Field(ge=1)
+    tool_call_id: str = Field(alias="toolCallId", min_length=1)
+    capability: str = Field(min_length=1)
+    status: Literal[
+        "created", "running", "waitingForConfirmation",
+        "completed", "failed", "cancelled",
+    ]
+    phase: Literal[
+        "understanding", "planning", "waitingForConfirmation",
+        "executing", "verifying", "completed", "failed", "cancelled",
+    ]
+    progress: float | None = Field(default=None, ge=0, le=1)
+    detail: str | None = Field(default=None, max_length=2_000)
+    result_summary: str | None = Field(default=None, alias="resultSummary", max_length=4_000)
+    error_message: str | None = Field(default=None, alias="errorMessage", max_length=4_000)
+    occurred_at: datetime = Field(alias="occurredAt")
+
+    @model_validator(mode="after")
+    def validate_terminal_phase(self) -> "TaskCheckpointSubmission":
+        required_phase = {
+            "waitingForConfirmation": "waitingForConfirmation",
+            "completed": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+        }.get(self.status)
+        if required_phase is not None and self.phase != required_phase:
+            raise ValueError(f"Task status {self.status} requires phase {required_phase}")
         return self
 
     def semantic_payload(self) -> dict[str, object]:

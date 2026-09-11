@@ -16,6 +16,7 @@ final class TaskController {
     private let runtime: AgentRuntime
     private let notifier: any TaskNotifying
     private let resultReporter: any ToolResultReporting
+    private let checkpointReporter: any TaskCheckpointReporting
     @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
@@ -35,12 +36,14 @@ final class TaskController {
         modelContext: ModelContext,
         runtime: AgentRuntime,
         notifier: any TaskNotifying,
-        resultReporter: any ToolResultReporting = DisabledToolResultReporter()
+        resultReporter: any ToolResultReporting = DisabledToolResultReporter(),
+        checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter()
     ) {
         self.modelContext = modelContext
         self.runtime = runtime
         self.notifier = notifier
         self.resultReporter = resultReporter
+        self.checkpointReporter = checkpointReporter
         refresh()
     }
 
@@ -50,6 +53,9 @@ final class TaskController {
             runtime: .live(),
             notifier: LocalTaskNotificationCenter.shared,
             resultReporter: URLSessionToolResultReporter(
+                baseURL: AppConfiguration.modelProxyBaseURL
+            ),
+            checkpointReporter: URLSessionTaskCheckpointReporter(
                 baseURL: AppConfiguration.modelProxyBaseURL
             )
         )
@@ -63,7 +69,8 @@ final class TaskController {
             modelContext: modelContext,
             runtime: .testing(reminderExecutor: reminderExecutor),
             notifier: DisabledTaskNotifier(),
-            resultReporter: DisabledToolResultReporter()
+            resultReporter: DisabledToolResultReporter(),
+            checkpointReporter: DisabledTaskCheckpointReporter()
         )
     }
 
@@ -160,6 +167,7 @@ final class TaskController {
         taskSteps.forEach(modelContext.insert)
         try modelContext.save()
         tasks.insert(task, at: 0)
+        queueCheckpoint(for: task)
 
         if requiresConfirmation {
             await notifier.post(AgentTaskNotification(
@@ -184,6 +192,7 @@ final class TaskController {
             task.progress = 0.55
             task.errorMessage = nil
             touchAndSave(task)
+            queueCheckpoint(for: task)
 
             let receipt = try await runtime.execute(task: task)
             completeStep(2, for: task)
@@ -191,6 +200,7 @@ final class TaskController {
             task.phase = .verifying
             task.progress = 0.82
             touchAndSave(task)
+            queueCheckpoint(for: task)
 
             let verified = try runtime.verify(receipt: receipt, for: task)
             completeStep(3, for: task)
@@ -199,6 +209,7 @@ final class TaskController {
             task.progress = 1
             task.resultSummary = verified.summary
             touchAndSave(task)
+            queueCheckpoint(for: task)
             await notifier.post(AgentTaskNotification(
                 taskID: task.id,
                 kind: .completed,
@@ -213,6 +224,7 @@ final class TaskController {
             task.progress = nil
             task.errorMessage = error.localizedDescription
             touchAndSave(task)
+            queueCheckpoint(for: task)
             await queueAndReportResult(for: task)
         }
     }
@@ -225,7 +237,20 @@ final class TaskController {
         task.progress = nil
         task.resultSummary = "你取消了这次操作，未执行任何系统写入。"
         touchAndSave(task)
+        queueCheckpoint(for: task)
         await queueAndReportResult(for: task)
+    }
+
+    func flushPendingCheckpoints() async {
+        let pendingTasks = tasks.filter { $0.checkpointReportState == .pending }
+        for task in pendingTasks {
+            guard let report = makeCheckpointReport(for: task) else { continue }
+            await reportCheckpoint(
+                report,
+                conversationID: task.conversationID,
+                taskID: task.id
+            )
+        }
     }
 
     func flushPendingResultReports() async {
@@ -266,6 +291,80 @@ final class TaskController {
         task.updatedAt = Date()
         try? modelContext.save()
         tasks.sort { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func queueCheckpoint(for task: AgentTask) {
+        guard task.toolCallID != nil, task.capability != nil else { return }
+        task.checkpointRevision += 1
+        task.checkpointReportState = .pending
+        task.checkpointReportError = nil
+        touchAndSave(task)
+        guard let report = makeCheckpointReport(for: task) else { return }
+        let conversationID = task.conversationID
+        let taskID = task.id
+        Task { [weak self] in
+            await self?.reportCheckpoint(
+                report,
+                conversationID: conversationID,
+                taskID: taskID
+            )
+        }
+    }
+
+    private func reportCheckpoint(
+        _ report: TaskCheckpointReport,
+        conversationID: UUID,
+        taskID: UUID
+    ) async {
+        do {
+            let acknowledgement = try await checkpointReporter.report(
+                report,
+                conversationID: conversationID
+            )
+            guard let task = task(id: taskID),
+                  task.checkpointRevision == report.revision else { return }
+            task.checkpointRevision = max(
+                task.checkpointRevision,
+                acknowledgement.currentRevision
+            )
+            task.checkpointReportState = .delivered
+            task.checkpointReportError = nil
+            touchAndSave(task)
+        } catch let error as TaskCheckpointReporterError where error.isConflict {
+            guard let task = task(id: taskID),
+                  task.checkpointRevision == report.revision else { return }
+            task.checkpointReportState = .conflict
+            task.checkpointReportError = error.localizedDescription
+            touchAndSave(task)
+        } catch {
+            guard let task = task(id: taskID),
+                  task.checkpointRevision == report.revision else { return }
+            task.checkpointReportState = .pending
+            task.checkpointReportError = error.localizedDescription
+            touchAndSave(task)
+        }
+    }
+
+    private func makeCheckpointReport(for task: AgentTask) -> TaskCheckpointReport? {
+        guard let toolCallID = task.toolCallID,
+              let capability = task.capability,
+              task.checkpointRevision > 0 else { return nil }
+        let revision = task.checkpointRevision
+        return TaskCheckpointReport(
+            requestID: "task-checkpoint-\(task.id.uuidString.lowercased())-\(revision)",
+            protocolVersion: WellPhoneStreamDecoder.protocolVersion,
+            taskID: task.id,
+            revision: revision,
+            toolCallID: toolCallID,
+            capability: capability,
+            status: task.status,
+            phase: task.phase,
+            progress: task.progress,
+            detail: task.detail,
+            resultSummary: task.resultSummary,
+            errorMessage: task.errorMessage,
+            occurredAt: task.updatedAt
+        )
     }
 
     private func queueAndReportResult(for task: AgentTask) async {

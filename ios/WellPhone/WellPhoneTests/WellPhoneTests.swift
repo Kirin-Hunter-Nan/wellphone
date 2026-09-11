@@ -239,11 +239,13 @@ struct WellPhoneTests {
         let executor = FakeReminderExecutor()
         let notifier = RecordingTaskNotifier()
         let resultReporter = RecordingToolResultReporter()
+        let checkpointReporter = RecordingTaskCheckpointReporter()
         let controller = TaskController(
             modelContext: context,
             runtime: .testing(reminderExecutor: executor),
             notifier: notifier,
-            resultReporter: resultReporter
+            resultReporter: resultReporter,
+            checkpointReporter: checkpointReporter
         )
         let request = AgentToolRequest(
             id: "call_1",
@@ -279,6 +281,22 @@ struct WellPhoneTests {
         #expect(reports.first?.result.result?.title == "提交报销")
         #expect(reports.first?.result.result?.dueAt != nil)
         #expect(reports.first?.result.result?.timeZone == TimeZone.current.identifier)
+
+        for _ in 0..<100 {
+            if await checkpointReporter.reportCount >= 4 { break }
+            await Task.yield()
+        }
+        let checkpoints = await checkpointReporter.reports.sorted {
+            $0.checkpoint.revision < $1.checkpoint.revision
+        }
+        #expect(checkpoints.map(\.checkpoint.revision) == [1, 2, 3, 4])
+        #expect(checkpoints.map(\.checkpoint.phase) == [
+            .waitingForConfirmation,
+            .executing,
+            .verifying,
+            .completed,
+        ])
+        #expect(task.checkpointReportState == .delivered)
     }
 
     @Test @MainActor
@@ -442,6 +460,43 @@ struct WellPhoneTests {
         #expect(attemptCount == 2)
     }
 
+    @Test @MainActor
+    func pendingTaskCheckpointRetriesWithoutBlockingLocalExecution() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let checkpointReporter = ToggleTaskCheckpointReporter(shouldFail: true)
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: executor),
+            notifier: DisabledTaskNotifier(),
+            resultReporter: DisabledToolResultReporter(),
+            checkpointReporter: checkpointReporter
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_checkpoint_retry",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.confirmTask(taskID: task.id)
+        await controller.flushPendingCheckpoints()
+        #expect(task.status == .completed)
+        #expect(executor.createCount == 1)
+        #expect(task.checkpointRevision == 4)
+        #expect(task.checkpointReportState == .pending)
+
+        await checkpointReporter.setShouldFail(false)
+        await controller.flushPendingCheckpoints()
+        #expect(task.status == .completed)
+        #expect(task.checkpointReportState == .delivered)
+        let latestRevision = await checkpointReporter.latestRevision
+        #expect(latestRevision == 4)
+    }
+
     @MainActor
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema([
@@ -499,6 +554,68 @@ private actor RecordingToolResultReporter: ToolResultReporting {
             duplicate: false,
             continuationStatus: .unavailable,
             assistantMessage: nil,
+            protocolVersion: "1.0"
+        )
+    }
+}
+
+private actor RecordingTaskCheckpointReporter: TaskCheckpointReporting {
+    struct CapturedReport: Sendable {
+        let checkpoint: TaskCheckpointReport
+        let conversationID: UUID
+    }
+
+    private(set) var reports: [CapturedReport] = []
+
+    var reportCount: Int { reports.count }
+
+    func report(
+        _ checkpoint: TaskCheckpointReport,
+        conversationID: UUID
+    ) async throws -> TaskCheckpointAcknowledgement {
+        let revision = await checkpoint.revision
+        reports.append(CapturedReport(
+            checkpoint: checkpoint,
+            conversationID: conversationID
+        ))
+        return TaskCheckpointAcknowledgement(
+            accepted: true,
+            duplicate: false,
+            applied: true,
+            currentRevision: revision,
+            gap: false,
+            protocolVersion: "1.0"
+        )
+    }
+}
+
+private actor ToggleTaskCheckpointReporter: TaskCheckpointReporting {
+    private var shouldFail: Bool
+    private(set) var latestRevision = 0
+
+    init(shouldFail: Bool) {
+        self.shouldFail = shouldFail
+    }
+
+    func setShouldFail(_ shouldFail: Bool) {
+        self.shouldFail = shouldFail
+    }
+
+    func report(
+        _ checkpoint: TaskCheckpointReport,
+        conversationID: UUID
+    ) async throws -> TaskCheckpointAcknowledgement {
+        let revision = await checkpoint.revision
+        latestRevision = max(latestRevision, revision)
+        if shouldFail {
+            throw URLError(.notConnectedToInternet)
+        }
+        return TaskCheckpointAcknowledgement(
+            accepted: true,
+            duplicate: false,
+            applied: true,
+            currentRevision: revision,
+            gap: false,
             protocolVersion: "1.0"
         )
     }

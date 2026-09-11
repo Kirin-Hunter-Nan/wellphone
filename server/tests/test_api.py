@@ -573,3 +573,51 @@ def test_rejects_invalid_tool_result_outcome() -> None:
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_accepts_task_checkpoints_idempotently_and_tracks_revision_gaps() -> None:
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+    )
+    endpoint = (
+        "/v1/conversations/39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7/task-checkpoints"
+    )
+    payload = {
+        "requestId": "checkpoint_1",
+        "protocolVersion": "1.0",
+        "taskId": "7c215f3c-e513-49cc-b645-20dfbb1aa954",
+        "revision": 1,
+        "toolCallId": "call_123",
+        "capability": "reminder.create",
+        "status": "waitingForConfirmation",
+        "phase": "waitingForConfirmation",
+        "progress": 0.35,
+        "detail": "等待用户确认",
+        "occurredAt": "2026-09-11T08:00:00Z",
+    }
+
+    with TestClient(app) as client:
+        first = client.post(endpoint, json=payload)
+        duplicate = client.post(endpoint, json=payload)
+        jumped = client.post(endpoint, json={
+            **payload,
+            "requestId": "checkpoint_3",
+            "revision": 3,
+            "status": "completed",
+            "phase": "completed",
+            "progress": 1,
+        })
+        conflict = client.post(endpoint, json={
+            **payload,
+            "status": "running",
+            "phase": "executing",
+        })
+
+    assert first.json()["applied"] is True
+    assert duplicate.json()["duplicate"] is True
+    assert jumped.json()["currentRevision"] == 3
+    assert jumped.json()["gap"] is True
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "task_checkpoint_conflict"

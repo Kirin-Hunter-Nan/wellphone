@@ -26,6 +26,10 @@ PostgreSQL 中的 chat request 同时是服务端权威会话历史。服务端�
 
 结果先在 SwiftData 标记为待同步，再由 PostgreSQL 使用 `(conversation_id, tool_call_id)` 幂等接收。最终模型回复也绑定到同一个键：网络重试复用已保存的回复，不重复调用模型，也不在聊天窗口重复插入消息。回传或续接失败不得改变设备端已经验证的真实执行结果。
 
+任务运行状态使用独立的 checkpoint 通道同步。SwiftData 为每个任务维护单调递增的 `revision`；等待确认、执行、验证以及完成、失败或取消等关键转换都会生成检查点。Python 服务端将每个版本写入 PostgreSQL 事件日志，并维护一份只接受更高版本的最新快照。旧版本重放不会覆盖新状态，同一版本或 `requestId` 携带不同内容会被拒绝。
+
+checkpoint 上报不属于 EventKit 写入事务，网络失败不得阻塞或回滚设备端执行。客户端只持久化最新待上报快照，App 下次启动时继续补报；服务端允许版本跳号并记录 `gap`，因此即使中间状态未能送达，也能恢复到设备已确认的最新状态。用户确认和 iOS 权限仍只在客户端完成，服务端检查点不获得代替用户执行系统写入的权限。
+
 `verified` 结果应携带设备回读后确认的结构化字段。例如 `reminder.create` 返回标题、本地 ISO 8601 时间和 IANA 时区。模型最终回复只能复述 Tool Result 明确提供的事实，不能自行换算时间或补充未经验证的结果。
 
 模型续接由 PostgreSQL 状态机协调：新上下文为 `pending`，工作实例通过原子更新领取为 `processing` 并获得有限租约；成功后进入 `completed`，上游失败进入 `failed`。并发请求不能重复领取，进程崩溃后过期租约允许其他实例恢复，`continuation_attempts` 和 `last_error_code` 保留恢复审计信息。

@@ -44,6 +44,12 @@ enum ToolResultReportState: String, Codable, Sendable {
     case conflict
 }
 
+enum TaskCheckpointReportState: String, Codable, Sendable {
+    case pending
+    case delivered
+    case conflict
+}
+
 @Model
 final class AgentTask {
     @Attribute(.unique) var id: UUID
@@ -65,6 +71,9 @@ final class AgentTask {
     var errorMessage: String?
     var resultReportStateRawValue: String?
     var resultReportError: String?
+    var checkpointRevisionValue: Int?
+    var checkpointReportStateRawValue: String?
+    var checkpointReportError: String?
 
     var status: AgentTaskStatus {
         get { AgentTaskStatus(rawValue: statusRawValue) ?? .failed }
@@ -79,6 +88,18 @@ final class AgentTask {
     var resultReportState: ToolResultReportState? {
         get { resultReportStateRawValue.flatMap(ToolResultReportState.init(rawValue:)) }
         set { resultReportStateRawValue = newValue?.rawValue }
+    }
+
+    var checkpointRevision: Int {
+        get { checkpointRevisionValue ?? 0 }
+        set { checkpointRevisionValue = newValue }
+    }
+
+    var checkpointReportState: TaskCheckpointReportState? {
+        get {
+            checkpointReportStateRawValue.flatMap(TaskCheckpointReportState.init(rawValue:))
+        }
+        set { checkpointReportStateRawValue = newValue?.rawValue }
     }
 
     init(
@@ -100,7 +121,10 @@ final class AgentTask {
         resultSummary: String? = nil,
         errorMessage: String? = nil,
         resultReportState: ToolResultReportState? = nil,
-        resultReportError: String? = nil
+        resultReportError: String? = nil,
+        checkpointRevision: Int? = nil,
+        checkpointReportState: TaskCheckpointReportState? = nil,
+        checkpointReportError: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -121,5 +145,8 @@ final class AgentTask {
         self.errorMessage = errorMessage
         self.resultReportStateRawValue = resultReportState?.rawValue
         self.resultReportError = resultReportError
+        self.checkpointRevisionValue = checkpointRevision
+        self.checkpointReportStateRawValue = checkpointReportState?.rawValue
+        self.checkpointReportError = checkpointReportError
     }
 }
