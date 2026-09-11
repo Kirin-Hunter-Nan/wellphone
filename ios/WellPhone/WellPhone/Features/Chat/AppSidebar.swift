@@ -80,6 +80,7 @@ struct AppSidebar: View {
         }
         .frame(maxHeight: .infinity)
         .background(.regularMaterial)
+        .accessibilityIdentifier("chat.sidebar")
     }
 }
 

@@ -23,14 +23,30 @@ final class WellPhoneUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testSwipeRightRevealsSidebar() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        app.swipeRight()
+
+        XCTAssertTrue(app.otherElements["chat.sidebar"].waitForExistence(timeout: 2))
+    }
+
+    @MainActor
+    func testTappingConversationDismissesComposerKeyboard() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let composer = app.textFields["chat.composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 2))
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2))
+
+        let conversation = app.scrollViews["chat.conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 2))
+        conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+
+        XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
     }
 
     @MainActor

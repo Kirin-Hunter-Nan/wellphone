@@ -15,7 +15,6 @@ struct ChatView: View {
                 NavigationStack {
                     VStack(spacing: 0) {
                         conversation
-                        Divider()
                         composer(draft: $controller.draft)
                     }
                     .navigationTitle("WellPhone")
@@ -23,10 +22,7 @@ struct ChatView: View {
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Button {
-                                isComposerFocused = false
-                                withAnimation(.snappy) {
-                                    isSidebarPresented = true
-                                }
+                                openSidebar()
                             } label: {
                                 Image(systemName: "sidebar.left")
                                     .overlay(alignment: .topTrailing) {
@@ -46,6 +42,7 @@ struct ChatView: View {
                     }
                 }
                 .disabled(isSidebarPresented)
+                .simultaneousGesture(sidebarRevealGesture)
 
                 if isSidebarPresented {
                     Color.black.opacity(0.25)
@@ -84,9 +81,31 @@ struct ChatView: View {
     }
 
     private func closeSidebar() {
+        isComposerFocused = false
         withAnimation(.snappy) {
             isSidebarPresented = false
         }
+    }
+
+    private func openSidebar() {
+        isComposerFocused = false
+        withAnimation(.snappy) {
+            isSidebarPresented = true
+        }
+    }
+
+    private var sidebarRevealGesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onEnded { value in
+                guard !isSidebarPresented, !isTaskCenterPresented else { return }
+
+                let horizontalDistance = value.translation.width
+                let verticalDistance = abs(value.translation.height)
+                guard horizontalDistance >= 80,
+                      horizontalDistance > verticalDistance * 1.25 else { return }
+
+                openSidebar()
+            }
     }
 
     private var conversation: some View {
@@ -116,6 +135,11 @@ struct ChatView: View {
                 .padding(.vertical, 20)
             }
             .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("chat.conversation")
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isComposerFocused = false
+            }
             .onChange(of: controller.messages.last?.text) {
                 guard let lastMessageID = controller.messages.last?.id else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
@@ -126,41 +150,64 @@ struct ChatView: View {
     }
 
     private func composer(draft: Binding<String>) -> some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("给 WellPhone 发消息", text: draft, axis: .vertical)
+        let canSend = !controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        return HStack(alignment: .bottom, spacing: 8) {
+            TextField("给 WellPhone 发消息…", text: draft, axis: .vertical)
                 .lineLimit(1...6)
                 .textFieldStyle(.plain)
+                .accessibilityIdentifier("chat.composer")
+                .font(.body)
+                .padding(.leading, 10)
+                .padding(.vertical, 9)
                 .focused($isComposerFocused)
                 .submitLabel(.send)
                 .onSubmit {
+                    guard canSend, !controller.isGenerating else { return }
                     controller.sendDraft()
                 }
 
-            if controller.isGenerating {
-                Button {
-                    controller.stopGenerating()
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .frame(width: 32, height: 32)
+            Group {
+                if controller.isGenerating {
+                    Button {
+                        controller.stopGenerating()
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.primary, in: Circle())
+                    }
+                    .accessibilityLabel("停止生成")
+                } else {
+                    Button {
+                        controller.sendDraft()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(canSend ? Color.white : Color.secondary)
+                            .frame(width: 36, height: 36)
+                            .background(canSend ? Color.accentColor : Color.secondary.opacity(0.12), in: Circle())
+                    }
+                    .disabled(!canSend)
+                    .accessibilityLabel("发送")
                 }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("停止生成")
-            } else {
-                Button {
-                    controller.sendDraft()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.circle)
-                .disabled(controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("发送")
             }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(6)
+        .background(
+            Color(uiColor: .secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
         .background(.bar)
     }
 }
