@@ -201,7 +201,11 @@ class QwenProvider:
                     "Use reminder_create only when the user explicitly asks to create "
                     "a reminder. Resolve relative dates to an absolute ISO 8601 "
                     "date-time with an explicit UTC offset. Never claim a reminder was "
-                    "created: the iPhone app will ask for confirmation and report the result."
+                    "created: the iPhone app will ask for confirmation and report the result. "
+                    "After receiving a Tool result, describe the outcome using only facts "
+                    "explicitly present in result or error. If result includes dueAt and "
+                    "timeZone, reproduce them as supplied; never infer, recalculate, or "
+                    "contradict their time zone."
                 ),
             },
             *request.provider_messages(),

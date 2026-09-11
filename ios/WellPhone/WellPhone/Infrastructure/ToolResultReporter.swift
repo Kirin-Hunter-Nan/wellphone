@@ -9,6 +9,21 @@ enum AgentToolResultStatus: String, Codable, Equatable, Sendable {
 struct AgentToolResultReport: Encodable, Equatable, Sendable {
     struct ResultBody: Encodable, Equatable, Sendable {
         let summary: String
+        let title: String?
+        let dueAt: String?
+        let timeZone: String?
+
+        init(
+            summary: String,
+            title: String? = nil,
+            dueAt: String? = nil,
+            timeZone: String? = nil
+        ) {
+            self.summary = summary
+            self.title = title
+            self.dueAt = dueAt
+            self.timeZone = timeZone
+        }
     }
 
     struct ErrorBody: Encodable, Equatable, Sendable {

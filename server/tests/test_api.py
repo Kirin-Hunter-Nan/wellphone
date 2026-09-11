@@ -14,7 +14,7 @@ from app.protocol import (
     encode_sse,
     response_completed,
 )
-from app.providers.base import ProviderToolCallContext, ToolCallContextSink
+from app.providers.base import ProviderError, ProviderToolCallContext, ToolCallContextSink
 
 
 class FakeStream:
@@ -48,6 +48,19 @@ class FakeProvider:
 
     async def close(self) -> None:
         pass
+
+
+class FailOnceContinuationProvider(FakeProvider):
+    async def continue_reply(
+        self,
+        context: ProviderToolCallContext,
+        result: ToolResultSubmission,
+    ) -> str:
+        self.continuation_count += 1
+        if self.continuation_count == 1:
+            raise ProviderError(502, "temporary failure")
+        assert context.tool_call_id == result.tool_call_id
+        return "提醒事项已经成功创建。"
 
 
 class UnhealthyResultStore(InMemoryToolResultStore):
@@ -202,6 +215,81 @@ def test_continues_model_from_saved_tool_call_and_reuses_reply_on_retry() -> Non
     assert retry.json()["assistantMessage"] == first.json()["assistantMessage"]
     assert retry.json()["duplicate"] is True
     assert provider.continuation_count == 1
+
+
+def test_failed_model_continuation_releases_claim_for_retry() -> None:
+    provider = FailOnceContinuationProvider()
+    store = InMemoryToolResultStore()
+    conversation_id = UUID("49fcd9e0-e03e-4ed9-a22e-b92079c15a22")
+    asyncio.run(store.save_tool_call_context(
+        conversation_id,
+        ProviderToolCallContext(
+            tool_call_id="call_retry",
+            capability="reminder.create",
+            provider="fake",
+            state={"messages": []},
+        ),
+    ))
+    app = create_app(settings=settings(), provider=provider, result_store=store)
+    payload = {
+        "requestId": "result_retry_1",
+        "protocolVersion": "1.0",
+        "toolCallId": "call_retry",
+        "taskId": "8c215f3c-e513-49cc-b645-20dfbb1aa955",
+        "capability": "reminder.create",
+        "status": "verified",
+        "result": {"summary": "提醒事项已创建并验证。"},
+    }
+    endpoint = f"/v1/conversations/{conversation_id}/tool-results"
+
+    with TestClient(app) as client:
+        failed = client.post(endpoint, json=payload)
+        retried = client.post(endpoint, json={**payload, "requestId": "result_retry_2"})
+
+    assert failed.status_code == 502
+    assert retried.status_code == 200
+    assert retried.json()["continuationStatus"] == "completed"
+    assert provider.continuation_count == 2
+
+
+def test_rejects_a_second_continuation_while_the_database_lease_is_active() -> None:
+    store = InMemoryToolResultStore()
+    conversation_id = UUID("59fcd9e0-e03e-4ed9-a22e-b92079c15a33")
+    asyncio.run(store.save_tool_call_context(
+        conversation_id,
+        ProviderToolCallContext(
+            tool_call_id="call_processing",
+            capability="reminder.create",
+            provider="fake",
+            state={"messages": []},
+        ),
+    ))
+    asyncio.run(store.claim_continuation(
+        conversation_id,
+        "call_processing",
+        lease_seconds=150,
+    ))
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=store,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/v1/conversations/{conversation_id}/tool-results",
+            json={
+                "requestId": "result_processing",
+                "protocolVersion": "1.0",
+                "toolCallId": "call_processing",
+                "taskId": "9c215f3c-e513-49cc-b645-20dfbb1aa956",
+                "capability": "reminder.create",
+                "status": "declined",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "continuation_in_progress"
 
 
 def test_rejects_invalid_tool_result_outcome() -> None:

@@ -52,8 +52,36 @@ async def test_stores_provider_context_and_assistant_reply_idempotently(
     assert await store.get_tool_call_context(conversation_id, "call_123") == context
     assert await store.get_assistant_reply(conversation_id, "call_123") is None
 
+    first_claim = await store.claim_continuation(
+        conversation_id,
+        "call_123",
+        lease_seconds=150,
+    )
+    concurrent_claim = await store.claim_continuation(
+        conversation_id,
+        "call_123",
+        lease_seconds=150,
+    )
+    assert first_claim.status == "claimed"
+    assert concurrent_claim.status == "processing"
+
+    await store.fail_continuation(conversation_id, "call_123", "temporary_error")
+    retry_claim = await store.claim_continuation(
+        conversation_id,
+        "call_123",
+        lease_seconds=150,
+    )
+    assert retry_claim.status == "claimed"
+
     await store.save_assistant_reply(conversation_id, "call_123", "已经创建。")
     await store.save_assistant_reply(conversation_id, "call_123", "已经创建。")
     assert await store.get_assistant_reply(conversation_id, "call_123") == "已经创建。"
+    completed_claim = await store.claim_continuation(
+        conversation_id,
+        "call_123",
+        lease_seconds=150,
+    )
+    assert completed_claim.status == "completed"
+    assert completed_claim.assistant_reply == "已经创建。"
     with pytest.raises(ToolResultConflictError):
         await store.save_assistant_reply(conversation_id, "call_123", "不同回复")

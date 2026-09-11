@@ -307,7 +307,15 @@ final class TaskController {
         switch task.status {
         case .completed:
             status = .verified
-            result = .init(summary: task.resultSummary ?? "任务已完成并通过验证。")
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            formatter.timeZone = .current
+            result = .init(
+                summary: task.resultSummary ?? "任务已完成并通过验证。",
+                title: task.title,
+                dueAt: task.scheduledAt.map(formatter.string(from:)),
+                timeZone: TimeZone.current.identifier
+            )
             reportError = nil
         case .cancelled:
             status = .declined

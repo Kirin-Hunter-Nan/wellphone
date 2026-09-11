@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 from uuid import UUID
-from weakref import WeakValueDictionary
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -38,7 +36,6 @@ def create_app(
         app.state.settings = resolved_settings
         app.state.provider = resolved_provider
         app.state.result_store = resolved_result_store
-        app.state.continuation_locks = WeakValueDictionary()
         try:
             yield
         finally:
@@ -135,31 +132,58 @@ def create_app(
                 "continuationStatus": "unavailable",
                 "protocolVersion": PROTOCOL_VERSION,
             }
-        lock_key = (conversation_id, submission.tool_call_id)
-        locks: WeakValueDictionary[tuple[UUID, str], asyncio.Lock] = (
-            request.app.state.continuation_locks
+        claim = await active_store.claim_continuation(
+            conversation_id,
+            submission.tool_call_id,
+            lease_seconds=active_settings.continuation_lease_seconds,
         )
-        lock = locks.setdefault(lock_key, asyncio.Lock())
-        async with lock:
-            existing_reply = await active_store.get_assistant_reply(
-                conversation_id,
-                submission.tool_call_id,
+        if claim.status == "missing":
+            return _error(
+                500,
+                "tool_context_missing",
+                "Stored Tool call context is unavailable",
             )
-            if existing_reply is None:
-                active_provider: ModelProvider = request.app.state.provider
-                try:
-                    existing_reply = await active_provider.continue_reply(context, submission)
-                    await active_store.save_assistant_reply(
-                        conversation_id,
-                        submission.tool_call_id,
-                        existing_reply,
-                    )
-                except ProviderError:
-                    return _error(
-                        502,
-                        "model_upstream_error",
-                        "设备操作结果已经保存，但模型暂时无法生成最终回复。",
-                    )
+        if claim.status == "processing":
+            return _error(
+                503,
+                "continuation_in_progress",
+                "设备操作结果已经保存，模型正在生成最终回复，请稍后重试。",
+            )
+        if claim.status == "completed":
+            existing_reply = claim.assistant_reply
+        else:
+            active_provider: ModelProvider = request.app.state.provider
+            try:
+                existing_reply = await active_provider.continue_reply(context, submission)
+                await active_store.save_assistant_reply(
+                    conversation_id,
+                    submission.tool_call_id,
+                    existing_reply,
+                )
+            except ProviderError:
+                await active_store.fail_continuation(
+                    conversation_id,
+                    submission.tool_call_id,
+                    "model_upstream_error",
+                )
+                return _error(
+                    502,
+                    "model_upstream_error",
+                    "设备操作结果已经保存，但模型暂时无法生成最终回复。",
+                )
+            except BaseException:
+                await active_store.fail_continuation(
+                    conversation_id,
+                    submission.tool_call_id,
+                    "continuation_interrupted",
+                )
+                raise
+        if existing_reply is None:
+            return _error(
+                500,
+                "assistant_reply_missing",
+                "Completed Tool continuation has no assistant reply",
+            )
         return {
             "accepted": True,
             "duplicate": not inserted,

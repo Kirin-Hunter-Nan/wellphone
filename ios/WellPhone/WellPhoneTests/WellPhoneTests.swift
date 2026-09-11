@@ -227,6 +227,9 @@ struct WellPhoneTests {
         #expect(reports.count == 1)
         #expect(reports.first?.result.toolCallID == "call_1")
         #expect(reports.first?.result.status == .verified)
+        #expect(reports.first?.result.result?.title == "提交报销")
+        #expect(reports.first?.result.result?.dueAt != nil)
+        #expect(reports.first?.result.result?.timeZone == TimeZone.current.identifier)
     }
 
     @Test @MainActor

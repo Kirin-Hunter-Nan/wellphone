@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
@@ -13,6 +14,12 @@ from app.protocol import ToolResultSubmission
 
 class ToolResultConflictError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationClaim:
+    status: Literal["claimed", "processing", "completed", "missing"]
+    assistant_reply: str | None = None
 
 
 class ToolResultStore(Protocol):
@@ -38,11 +45,24 @@ class ToolResultStore(Protocol):
         conversation_id: UUID,
         tool_call_id: str,
     ) -> str | None: ...
+    async def claim_continuation(
+        self,
+        conversation_id: UUID,
+        tool_call_id: str,
+        *,
+        lease_seconds: int,
+    ) -> ContinuationClaim: ...
     async def save_assistant_reply(
         self,
         conversation_id: UUID,
         tool_call_id: str,
         reply: str,
+    ) -> None: ...
+    async def fail_continuation(
+        self,
+        conversation_id: UUID,
+        tool_call_id: str,
+        error_code: str,
     ) -> None: ...
     async def close(self) -> None: ...
 
@@ -83,10 +103,31 @@ class PostgreSQLToolResultStore:
                     provider TEXT NOT NULL,
                     context_json TEXT NOT NULL,
                     assistant_reply TEXT,
+                    continuation_status TEXT NOT NULL DEFAULT 'pending',
+                    continuation_attempts INTEGER NOT NULL DEFAULT 0,
+                    lease_expires_at TIMESTAMPTZ,
+                    last_error_code TEXT,
                     created_at TIMESTAMPTZ NOT NULL,
                     completed_at TIMESTAMPTZ,
                     PRIMARY KEY (conversation_id, tool_call_id)
                 )
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE tool_call_contexts
+                    ADD COLUMN IF NOT EXISTS continuation_status TEXT NOT NULL DEFAULT 'pending',
+                    ADD COLUMN IF NOT EXISTS continuation_attempts INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS last_error_code TEXT
+                """
+            )
+            await connection.execute(
+                """
+                UPDATE tool_call_contexts
+                SET continuation_status = 'completed'
+                WHERE assistant_reply IS NOT NULL
+                  AND continuation_status <> 'completed'
                 """
             )
 
@@ -186,6 +227,55 @@ class PostgreSQLToolResultStore:
             row = await cursor.fetchone()
         return None if row is None else row[0]
 
+    async def claim_continuation(
+        self,
+        conversation_id: UUID,
+        tool_call_id: str,
+        *,
+        lease_seconds: int,
+    ) -> ContinuationClaim:
+        now = datetime.now(timezone.utc)
+        lease_expires_at = now + timedelta(seconds=lease_seconds)
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                UPDATE tool_call_contexts
+                SET continuation_status = 'processing',
+                    continuation_attempts = continuation_attempts + 1,
+                    lease_expires_at = %s,
+                    last_error_code = NULL
+                WHERE conversation_id = %s
+                  AND tool_call_id = %s
+                  AND assistant_reply IS NULL
+                  AND (
+                    continuation_status IN ('pending', 'failed')
+                    OR (
+                      continuation_status = 'processing'
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= %s)
+                    )
+                  )
+                RETURNING tool_call_id
+                """,
+                (lease_expires_at, conversation_id, tool_call_id, now),
+            )
+            if await cursor.fetchone() is not None:
+                return ContinuationClaim(status="claimed")
+
+            existing_cursor = await connection.execute(
+                """
+                SELECT continuation_status, assistant_reply
+                FROM tool_call_contexts
+                WHERE conversation_id = %s AND tool_call_id = %s
+                """,
+                (conversation_id, tool_call_id),
+            )
+            existing = await existing_cursor.fetchone()
+        if existing is None:
+            return ContinuationClaim(status="missing")
+        if existing[1] is not None or existing[0] == "completed":
+            return ContinuationClaim(status="completed", assistant_reply=existing[1])
+        return ContinuationClaim(status="processing")
+
     async def save_assistant_reply(
         self,
         conversation_id: UUID,
@@ -196,7 +286,11 @@ class PostgreSQLToolResultStore:
             cursor = await connection.execute(
                 """
                 UPDATE tool_call_contexts
-                SET assistant_reply = %s, completed_at = %s
+                SET assistant_reply = %s,
+                    continuation_status = 'completed',
+                    lease_expires_at = NULL,
+                    last_error_code = NULL,
+                    completed_at = %s
                 WHERE conversation_id = %s
                   AND tool_call_id = %s
                   AND assistant_reply IS NULL
@@ -224,6 +318,26 @@ class PostgreSQLToolResultStore:
                 raise ToolResultConflictError(
                     "A different assistant reply already exists for this Tool call"
                 )
+
+    async def fail_continuation(
+        self,
+        conversation_id: UUID,
+        tool_call_id: str,
+        error_code: str,
+    ) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                """
+                UPDATE tool_call_contexts
+                SET continuation_status = 'failed',
+                    lease_expires_at = NULL,
+                    last_error_code = %s
+                WHERE conversation_id = %s
+                  AND tool_call_id = %s
+                  AND assistant_reply IS NULL
+                """,
+                (error_code, conversation_id, tool_call_id),
+            )
 
     async def record(
         self,
@@ -283,6 +397,7 @@ class InMemoryToolResultStore:
         self._results: dict[tuple[UUID, str], str] = {}
         self._contexts: dict[tuple[UUID, str], ProviderToolCallContext] = {}
         self._replies: dict[tuple[UUID, str], str] = {}
+        self._continuation_statuses: dict[tuple[UUID, str], str] = {}
 
     async def initialize(self) -> None:
         pass
@@ -316,6 +431,7 @@ class InMemoryToolResultStore:
         existing = self._contexts.get(key)
         if existing is None:
             self._contexts[key] = context
+            self._continuation_statuses[key] = "pending"
             return
         if existing != context:
             raise ToolResultConflictError(
@@ -336,6 +452,26 @@ class InMemoryToolResultStore:
     ) -> str | None:
         return self._replies.get((conversation_id, tool_call_id))
 
+    async def claim_continuation(
+        self,
+        conversation_id: UUID,
+        tool_call_id: str,
+        *,
+        lease_seconds: int,
+    ) -> ContinuationClaim:
+        del lease_seconds
+        key = (conversation_id, tool_call_id)
+        if key not in self._contexts:
+            return ContinuationClaim(status="missing")
+        reply = self._replies.get(key)
+        if reply is not None:
+            return ContinuationClaim(status="completed", assistant_reply=reply)
+        status = self._continuation_statuses.get(key, "pending")
+        if status == "processing":
+            return ContinuationClaim(status="processing")
+        self._continuation_statuses[key] = "processing"
+        return ContinuationClaim(status="claimed")
+
     async def save_assistant_reply(
         self,
         conversation_id: UUID,
@@ -348,11 +484,23 @@ class InMemoryToolResultStore:
         existing = self._replies.get(key)
         if existing is None:
             self._replies[key] = reply
+            self._continuation_statuses[key] = "completed"
             return
         if existing != reply:
             raise ToolResultConflictError(
                 "A different assistant reply already exists for this Tool call"
             )
+
+    async def fail_continuation(
+        self,
+        conversation_id: UUID,
+        tool_call_id: str,
+        error_code: str,
+    ) -> None:
+        del error_code
+        key = (conversation_id, tool_call_id)
+        if key in self._contexts and key not in self._replies:
+            self._continuation_statuses[key] = "failed"
 
     async def close(self) -> None:
         pass

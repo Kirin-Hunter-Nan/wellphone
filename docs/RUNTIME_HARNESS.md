@@ -22,6 +22,10 @@ Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式�
 
 结果先在 SwiftData 标记为待同步，再由 PostgreSQL 使用 `(conversation_id, tool_call_id)` 幂等接收。最终模型回复也绑定到同一个键：网络重试复用已保存的回复，不重复调用模型，也不在聊天窗口重复插入消息。回传或续接失败不得改变设备端已经验证的真实执行结果。
 
+`verified` 结果应携带设备回读后确认的结构化字段。例如 `reminder.create` 返回标题、本地 ISO 8601 时间和 IANA 时区。模型最终回复只能复述 Tool Result 明确提供的事实，不能自行换算时间或补充未经验证的结果。
+
+模型续接由 PostgreSQL 状态机协调：新上下文为 `pending`，工作实例通过原子更新领取为 `processing` 并获得有限租约；成功后进入 `completed`，上游失败进入 `failed`。并发请求不能重复领取，进程崩溃后过期租约允许其他实例恢复，`continuation_attempts` 和 `last_error_code` 保留恢复审计信息。
+
 ```text
 Model Tool Call
   -> PostgreSQL opaque provider context
