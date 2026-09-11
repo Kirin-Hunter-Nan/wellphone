@@ -281,6 +281,7 @@ struct WellPhoneTests {
         #expect(reports.first?.result.result?.title == "提交报销")
         #expect(reports.first?.result.result?.dueAt != nil)
         #expect(reports.first?.result.result?.timeZone == TimeZone.current.identifier)
+        #expect(executor.lastIdempotencyKey == task.id.uuidString.lowercased())
 
         for _ in 0..<100 {
             if await checkpointReporter.reportCount >= 4 { break }
@@ -353,7 +354,7 @@ struct WellPhoneTests {
 
         #expect(request.descriptor.capability == "reminder.create")
         #expect(request.descriptor.confirmationPolicy == .always)
-        #expect(request.descriptor.supportsRetry == false)
+        #expect(request.descriptor.supportsRetry == true)
         #expect(request.task.stepTitles.execution == "写入系统提醒事项")
         #expect(request.task.stepTitles.verification == "回读并验证结果")
         #expect(executor.createCount == 0)
@@ -547,9 +548,12 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func appRestartDoesNotRepeatAnExecutionWithUnknownOutcome() async throws {
+    func appRestartRecoversExistingReminderWithoutRepeatingExecution() async throws {
         let container = try makeContainer()
-        let executor = FakeReminderExecutor()
+        let executor = FakeReminderExecutor(recoveredReminder: CreatedReminder(
+            identifier: "recovered-reminder-id",
+            listTitle: "提醒事项"
+        ))
         let initialController = TaskController(
             modelContext: container.mainContext,
             reminderExecutor: executor
@@ -582,14 +586,50 @@ struct WellPhoneTests {
         await restoredController.recoverInterruptedTasks()
 
         #expect(executor.createCount == 0)
-        #expect(executor.verifyCount == 0)
-        #expect(task.status == .failed)
-        #expect(task.phase == .failed)
-        #expect(task.errorMessage?.contains("不会自动重试") == true)
+        #expect(executor.recoverCount == 1)
+        #expect(executor.verifyCount == 1)
+        #expect(task.status == .completed)
+        #expect(task.phase == .completed)
         #expect(task.resultReportState == .pending)
 
         await restoredController.flushPendingResultReports()
         #expect(task.resultReportState == .delivered)
+    }
+
+    @Test @MainActor
+    func appRestartRetriesIdempotentExecutionWhenNoReminderExists() async throws {
+        let container = try makeContainer()
+        let executor = FakeReminderExecutor()
+        let initialController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        let task = try await initialController.prepareTool(
+            from: AgentToolRequest(
+                id: "call_retry_idempotent_execution",
+                capability: "reminder.create",
+                arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+        task.status = .running
+        task.phase = .executing
+        task.progress = 0.55
+        try container.mainContext.save()
+
+        let restoredController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: executor
+        )
+        await restoredController.recoverInterruptedTasks()
+
+        #expect(executor.recoverCount == 1)
+        #expect(executor.createCount == 1)
+        #expect(executor.verifyCount == 1)
+        #expect(executor.lastIdempotencyKey == task.id.uuidString.lowercased())
+        #expect(task.status == .completed)
+        #expect(task.phase == .completed)
     }
 
     @MainActor
@@ -609,11 +649,31 @@ struct WellPhoneTests {
 @MainActor
 private final class FakeReminderExecutor: ReminderExecuting {
     private(set) var createCount = 0
+    private(set) var recoverCount = 0
     private(set) var verifyCount = 0
+    private(set) var lastIdempotencyKey: String?
+    private let recoveredReminder: CreatedReminder?
 
-    func create(_ draft: ReminderDraft) async throws -> CreatedReminder {
+    init(recoveredReminder: CreatedReminder? = nil) {
+        self.recoveredReminder = recoveredReminder
+    }
+
+    func create(
+        _ draft: ReminderDraft,
+        idempotencyKey: String
+    ) async throws -> CreatedReminder {
         createCount += 1
+        lastIdempotencyKey = idempotencyKey
         return CreatedReminder(identifier: "test-reminder-id", listTitle: "提醒事项")
+    }
+
+    func recover(
+        _ draft: ReminderDraft,
+        idempotencyKey: String
+    ) async throws -> CreatedReminder? {
+        recoverCount += 1
+        lastIdempotencyKey = idempotencyKey
+        return recoveredReminder
     }
 
     func verify(_ created: CreatedReminder, matches draft: ReminderDraft) throws -> VerifiedReminder {

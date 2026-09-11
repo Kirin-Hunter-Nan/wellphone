@@ -48,7 +48,22 @@ final class AgentRuntime {
 
     func execute(task: AgentTask) async throws -> ToolExecutionReceipt {
         let resolved = try resolve(task: task)
-        return try await resolved.tool.execute(argumentsJSON: resolved.argumentsJSON)
+        return try await resolved.tool.execute(
+            argumentsJSON: resolved.argumentsJSON,
+            idempotencyKey: task.id.uuidString.lowercased()
+        )
+    }
+
+    func recoverExecution(task: AgentTask) async throws -> ToolExecutionReceipt? {
+        let resolved = try resolve(task: task)
+        return try await resolved.tool.recoverExecution(
+            argumentsJSON: resolved.argumentsJSON,
+            idempotencyKey: task.id.uuidString.lowercased()
+        )
+    }
+
+    func supportsExecutionRetry(task: AgentTask) throws -> Bool {
+        try resolve(task: task).tool.descriptor.supportsRetry
     }
 
     func verify(

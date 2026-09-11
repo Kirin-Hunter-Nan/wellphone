@@ -225,11 +225,29 @@ final class TaskController {
                     await fail(task, error: error, reportResultImmediately: false)
                 }
             case .executing:
-                await fail(
-                    task,
-                    error: TaskRecoveryError.executionOutcomeUnknown,
-                    reportResultImmediately: false
-                )
+                do {
+                    let receipt: ToolExecutionReceipt
+                    if let recovered = try await runtime.recoverExecution(task: task) {
+                        receipt = recovered
+                    } else if try runtime.supportsExecutionRetry(task: task) {
+                        receipt = try await runtime.execute(task: task)
+                    } else {
+                        await fail(
+                            task,
+                            error: TaskRecoveryError.executionOutcomeUnknown,
+                            reportResultImmediately: false
+                        )
+                        continue
+                    }
+                    persistReceiptAndBeginVerification(receipt, for: task)
+                    try await verifyAndComplete(
+                        task,
+                        receipt: receipt,
+                        reportResultImmediately: false
+                    )
+                } catch {
+                    await fail(task, error: error, reportResultImmediately: false)
+                }
             case .understanding, .planning, .waitingForConfirmation,
                  .completed, .failed, .cancelled:
                 await fail(

@@ -49,7 +49,14 @@ protocol AgentTool: AnyObject {
     var descriptor: AgentToolDescriptor { get }
 
     func prepare(argumentsJSON: String) throws -> PreparedAgentToolTask
-    func execute(argumentsJSON: String) async throws -> ToolExecutionReceipt
+    func execute(
+        argumentsJSON: String,
+        idempotencyKey: String
+    ) async throws -> ToolExecutionReceipt
+    func recoverExecution(
+        argumentsJSON: String,
+        idempotencyKey: String
+    ) async throws -> ToolExecutionReceipt?
     func verify(
         receipt: ToolExecutionReceipt,
         argumentsJSON: String

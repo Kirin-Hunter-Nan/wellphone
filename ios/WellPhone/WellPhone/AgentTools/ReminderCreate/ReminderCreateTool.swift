@@ -6,7 +6,7 @@ final class ReminderCreateTool: AgentTool {
         capability: "reminder.create",
         riskLevel: .write,
         confirmationPolicy: .always,
-        supportsRetry: false
+        supportsRetry: true
     )
 
     private let creator: any ReminderCreating
@@ -36,10 +36,25 @@ final class ReminderCreateTool: AgentTool {
         )
     }
 
-    func execute(argumentsJSON: String) async throws -> ToolExecutionReceipt {
+    func execute(
+        argumentsJSON: String,
+        idempotencyKey: String
+    ) async throws -> ToolExecutionReceipt {
         let draft = try ReminderDraft.decode(arguments: argumentsJSON)
-        let created = try await creator.create(draft)
+        let created = try await creator.create(draft, idempotencyKey: idempotencyKey)
         return ToolExecutionReceipt(payload: try JSONEncoder().encode(created))
+    }
+
+    func recoverExecution(
+        argumentsJSON: String,
+        idempotencyKey: String
+    ) async throws -> ToolExecutionReceipt? {
+        let draft = try ReminderDraft.decode(arguments: argumentsJSON)
+        guard let recovered = try await creator.recover(
+            draft,
+            idempotencyKey: idempotencyKey
+        ) else { return nil }
+        return ToolExecutionReceipt(payload: try JSONEncoder().encode(recovered))
     }
 
     func verify(

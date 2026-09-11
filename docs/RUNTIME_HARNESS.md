@@ -32,7 +32,7 @@ checkpoint 上报不属于 EventKit 写入事务，网络失败不得阻塞或�
 
 设备端 Tool 返回后，Runtime Harness 会先将 opaque execution receipt 写入 SwiftData，再进入验证阶段。App 若在验证或结果同步期间终止，重启后使用该凭证继续回读验证，不再次执行系统写入。执行凭证可能包含系统对象标识，因此留在设备端，不随 checkpoint 上传服务端。
 
-若 App 在执行阶段终止且还没有持久化 receipt，Runtime 无法证明系统写入是否发生。对于 `supportsRetry == false` 的副作用 Tool，恢复策略是标记为结果不确定的失败并上报，而不是自动重放。后续只有实现 Tool 级幂等查找或补偿机制后，才可以把这类状态改为自动恢复执行。
+若 App 在执行阶段终止且还没有持久化 receipt，Runtime 会先调用 Tool 级恢复入口。`reminder.create` 使用任务 UUID 生成稳定幂等键，并把专用 URL 标记写入 EventKit 提醒元数据；重启后先按标记查找已有提醒，找到后回读验证，找不到时才执行创建，而创建入口本身也会再次查重。因此即使 App 在 EventKit 保存成功、receipt 持久化之前终止，也不会创建第二条提醒。对于尚未实现幂等查找且 `supportsRetry == false` 的副作用 Tool，仍然标记为结果不确定的失败，不自动重放。
 
 `verified` 结果应携带设备回读后确认的结构化字段。例如 `reminder.create` 返回标题、本地 ISO 8601 时间和 IANA 时区。模型最终回复只能复述 Tool Result 明确提供的事实，不能自行换算时间或补充未经验证的结果。
 
@@ -68,15 +68,15 @@ AgentToolRequest
 4. 模型不能直接调用内部 executor 或 verifier。
 5. 只有验证成功后，任务才能标记为 completed。
 6. 执行失败或验证失败必须保留 failed 状态，不得由模型宣称成功。
-7. 在幂等机制落地前，具有写入副作用的 Tool 不得声明支持自动重试。
+7. 具有写入副作用的 Tool 只有在稳定幂等键、执行前查重和中断恢复均已实现后，才能声明支持自动重试。
 
 ## 目录职责
 
 ```text
 AgentRuntime/
-  AgentTool.swift       通用 Tool 契约与元数据
+  AgentTool.swift       通用 Tool 契约、元数据与恢复入口
   ToolRegistry.swift    设备 capability 白名单
-  AgentRuntime.swift    prepare / execute / verify 调度入口
+  AgentRuntime.swift    prepare / execute / recover / verify 调度入口
 
 AgentTools/
   ReminderCreate/
