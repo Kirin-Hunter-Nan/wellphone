@@ -27,6 +27,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>连接您在本地网络运行的 WellPhone 模型代理。</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>仅在您确认后，将旅行行程添加到系统日历。</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>在您确认后，将任务写入系统提醒事项并验证结果。</string>
 	<key>UIApplicationSceneManifest</key>

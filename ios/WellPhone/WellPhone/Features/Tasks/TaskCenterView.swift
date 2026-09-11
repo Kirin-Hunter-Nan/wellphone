@@ -139,7 +139,9 @@ private struct TaskDetailView: View {
                         Text(scheduledAt, format: .dateTime.year().month().day().weekday().hour().minute())
                     }
                 }
-                LabeledContent("提醒列表", value: task.targetName ?? "系统默认列表")
+                if task.executionLocation == .device {
+                    LabeledContent("提醒列表", value: task.targetName ?? "系统默认列表")
+                }
                 if let detail = task.detail {
                     LabeledContent("备注") {
                         Text(detail)
@@ -182,6 +184,42 @@ private struct TaskDetailView: View {
 
             if let resultSummary = task.resultSummary {
                 Section("结果") { Text(resultSummary) }
+            }
+
+            let artifacts = controller.artifacts(for: task)
+            if !artifacts.isEmpty {
+                Section("任务产物") {
+                    ForEach(artifacts) { artifact in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(artifact.title, systemImage: artifactIcon(artifact.kind))
+                                .font(.headline)
+                            if let text = artifactText(artifact), artifact.kind == .text {
+                                MarkdownArtifactText(source: text)
+                            } else {
+                                Text(artifact.contentType)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let reference = artifact.storageReference,
+                               !reference.hasPrefix("eventkit:"),
+                               let url = URL(string: reference) {
+                                Link("打开产物", destination: url)
+                            }
+                            if artifact.contentType == "application/vnd.wellphone.calendar-events+json" {
+                                if artifact.storageReference?.hasPrefix("eventkit:") == true {
+                                    Label("已添加到 Apple 日历", systemImage: "checkmark.circle.fill")
+                                        .font(.footnote)
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Button("添加到 Apple 日历") {
+                                        Task { await controller.importTravelCalendar(taskID: task.id) }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
             }
 
             if let errorMessage = task.errorMessage {
@@ -234,11 +272,13 @@ private struct TaskDetailView: View {
 
             if task.status == .waitingForConfirmation {
                 Section("需要确认") {
-                    Text("确认后才会请求系统权限并写入提醒事项。")
+                    Text(task.executionLocation == .server
+                         ? "确认后任务会在服务端持续运行，你可以离开当前页面。"
+                         : "确认后才会请求系统权限并写入提醒事项。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
-                    Button("确认创建提醒") {
+                    Button(task.executionLocation == .server ? "确认开始任务" : "确认创建提醒") {
                         Task { await controller.confirmTask(taskID: task.id) }
                     }
 
@@ -266,6 +306,25 @@ private struct TaskDetailView: View {
         }
         .navigationTitle(task.title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func artifactText(_ artifact: TaskArtifact) -> String? {
+        guard let payloadJSON = artifact.payloadJSON,
+              let data = payloadJSON.data(using: .utf8),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              case .string(let text) = value else { return nil }
+        return text
+    }
+
+    private func artifactIcon(_ kind: TaskArtifactKind) -> String {
+        switch kind {
+        case .itinerary: "map"
+        case .json: "calendar"
+        case .text: "doc.text"
+        case .image: "photo"
+        case .pdf: "doc.richtext"
+        case .map: "map.fill"
+        }
     }
 
     private var displayedProgress: Double {
@@ -301,6 +360,26 @@ private struct TaskDetailView: View {
         case .failed: .red
         case .cancelled: .secondary
         }
+    }
+}
+
+private struct MarkdownArtifactText: View {
+    let source: String
+
+    var body: some View {
+        Group {
+            if let attributed = try? AttributedString(
+                markdown: source,
+                options: .init(interpretedSyntax: .full)
+            ) {
+                Text(attributed)
+            } else {
+                Text(source)
+            }
+        }
+        .font(.footnote)
+        .textSelection(.enabled)
+        .tint(.accentColor)
     }
 }
 

@@ -7,22 +7,28 @@ enum AgentToolResultStatus: String, Codable, Equatable, Sendable {
 }
 
 struct AgentToolResultReport: Encodable, Equatable, Sendable {
+    struct ArtifactReference: Encodable, Equatable, Sendable {
+        let id: UUID
+        let kind: String
+        let title: String
+        let contentType: String
+        let storageReference: String?
+        let payload: JSONValue?
+    }
+
     struct ResultBody: Encodable, Equatable, Sendable {
         let summary: String
-        let title: String?
-        let dueAt: String?
-        let timeZone: String?
+        let payload: [String: JSONValue]?
+        let artifacts: [ArtifactReference]?
 
         init(
             summary: String,
-            title: String? = nil,
-            dueAt: String? = nil,
-            timeZone: String? = nil
+            payload: [String: JSONValue]? = nil,
+            artifacts: [ArtifactReference]? = nil
         ) {
             self.summary = summary
-            self.title = title
-            self.dueAt = dueAt
-            self.timeZone = timeZone
+            self.payload = payload
+            self.artifacts = artifacts
         }
     }
 

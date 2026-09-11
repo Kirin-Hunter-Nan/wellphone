@@ -202,9 +202,12 @@ class QwenProvider:
                     "a reminder. Resolve relative dates to an absolute ISO 8601 "
                     "date-time with an explicit UTC offset. Never claim a reminder was "
                     "created: the iPhone app will ask for confirmation and report the result. "
+                    "Use travel_plan when the user asks you to create a travel itinerary and "
+                    "both exact start and end dates are known. It runs as a confirmed background "
+                    "task, so never claim the itinerary is complete before its Tool result. "
                     "After receiving a Tool result, describe the outcome using only facts "
-                    "explicitly present in result or error. If result includes dueAt and "
-                    "timeZone, reproduce them as supplied; never infer, recalculate, or "
+                    "explicitly present in result or error. If result.payload includes "
+                    "dueAt and timeZone, reproduce them as supplied; never infer, recalculate, or "
                     "contradict their time zone."
                 ),
             },

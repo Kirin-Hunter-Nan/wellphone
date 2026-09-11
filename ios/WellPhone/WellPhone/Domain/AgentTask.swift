@@ -58,6 +58,7 @@ final class AgentTask {
     var title: String
     var toolCallID: String?
     var capability: String?
+    var executionLocationRawValue: String?
     var createdAt: Date
     var updatedAt: Date
     var statusRawValue: String
@@ -96,6 +97,11 @@ final class AgentTask {
         set { resultReportStateRawValue = newValue?.rawValue }
     }
 
+    var executionLocation: TaskExecutionLocation {
+        get { executionLocationRawValue.flatMap(TaskExecutionLocation.init(rawValue:)) ?? .device }
+        set { executionLocationRawValue = newValue.rawValue }
+    }
+
     var executionAttemptCount: Int {
         get { executionAttemptCountValue ?? 0 }
         set { executionAttemptCountValue = newValue }
@@ -120,6 +126,7 @@ final class AgentTask {
         title: String,
         toolCallID: String? = nil,
         capability: String? = nil,
+        executionLocation: TaskExecutionLocation = .device,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         status: AgentTaskStatus = .created,
@@ -149,6 +156,7 @@ final class AgentTask {
         self.title = title
         self.toolCallID = toolCallID
         self.capability = capability
+        self.executionLocationRawValue = executionLocation.rawValue
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.statusRawValue = status.rawValue

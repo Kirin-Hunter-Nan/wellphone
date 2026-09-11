@@ -58,7 +58,10 @@ enum WellPhoneStreamDecoder {
             return .toolRequested(AgentToolRequest(
                 id: toolCallID,
                 capability: capability,
-                arguments: argumentsJSON
+                arguments: argumentsJSON,
+                executionLocation: TaskExecutionLocation(
+                    rawValue: object["executionLocation"] as? String ?? "device"
+                ) ?? .device
             ))
 
         case "response.completed":

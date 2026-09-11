@@ -5,6 +5,20 @@ import SwiftData
 @MainActor
 @Observable
 final class TaskController {
+    struct CalendarImportPrompt: Identifiable, Equatable {
+        let taskID: UUID
+        let title: String
+
+        var id: UUID { taskID }
+    }
+
+    struct CompletionBanner: Identifiable, Equatable {
+        let id = UUID()
+        let taskID: UUID
+        let title: String
+        let summary: String
+    }
+
     struct AssistantFollowUp: Equatable, Sendable {
         let conversationID: UUID
         let toolCallID: String
@@ -12,15 +26,23 @@ final class TaskController {
     }
 
     private(set) var tasks: [AgentTask] = []
+    private(set) var calendarImportPrompt: CalendarImportPrompt?
+    private(set) var completionBanner: CompletionBanner?
     private let modelContext: ModelContext
     private let runtime: AgentRuntime
     private let notifier: any TaskNotifying
     private let resultReporter: any ToolResultReporting
     private let checkpointReporter: any TaskCheckpointReporting
+    private let serverTaskClient: (any ServerTaskServing)?
+    private let calendarImporter: (any TravelCalendarImporting)?
     private let executionRetryPolicy: ToolExecutionRetryPolicy
     private let executionDeadlinePolicy: ToolExecutionDeadlinePolicy
     @ObservationIgnored
     private var recoveringTaskIDs: Set<UUID> = []
+    @ObservationIgnored
+    private var serverPollingTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private var completionBannerTask: Task<Void, Never>?
     @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
@@ -42,6 +64,8 @@ final class TaskController {
         notifier: any TaskNotifying,
         resultReporter: any ToolResultReporting = DisabledToolResultReporter(),
         checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter(),
+        serverTaskClient: (any ServerTaskServing)? = nil,
+        calendarImporter: (any TravelCalendarImporting)? = nil,
         executionRetryPolicy: ToolExecutionRetryPolicy = .standard,
         executionDeadlinePolicy: ToolExecutionDeadlinePolicy = .standard
     ) {
@@ -50,6 +74,8 @@ final class TaskController {
         self.notifier = notifier
         self.resultReporter = resultReporter
         self.checkpointReporter = checkpointReporter
+        self.serverTaskClient = serverTaskClient
+        self.calendarImporter = calendarImporter
         self.executionRetryPolicy = executionRetryPolicy
         self.executionDeadlinePolicy = executionDeadlinePolicy
         refresh()
@@ -65,7 +91,11 @@ final class TaskController {
             ),
             checkpointReporter: URLSessionTaskCheckpointReporter(
                 baseURL: AppConfiguration.modelProxyBaseURL
-            )
+            ),
+            serverTaskClient: URLSessionServerTaskClient(
+                baseURL: AppConfiguration.modelProxyBaseURL
+            ),
+            calendarImporter: EventKitTravelCalendarImporter()
         )
     }
 
@@ -125,6 +155,13 @@ final class TaskController {
             }
             return existingTask
         }
+        if request.executionLocation == .server {
+            return try await prepareServerTool(
+                from: request,
+                conversationID: conversationID,
+                sourceMessageID: sourceMessageID
+            )
+        }
         let preparedRequest = try runtime.prepare(request: request)
         let prepared = preparedRequest.task
         let requiresConfirmation = preparedRequest.descriptor.confirmationPolicy == .always
@@ -134,6 +171,7 @@ final class TaskController {
             title: prepared.title,
             toolCallID: request.id,
             capability: preparedRequest.descriptor.capability,
+            executionLocation: .device,
             status: requiresConfirmation ? .waitingForConfirmation : .created,
             phase: requiresConfirmation ? .waitingForConfirmation : .planning,
             progress: requiresConfirmation ? 0.35 : 0.2,
@@ -192,6 +230,10 @@ final class TaskController {
     func confirmTask(taskID: UUID) async {
         guard let task = task(id: taskID),
               task.status == .waitingForConfirmation else { return }
+        if task.executionLocation == .server {
+            await confirmServerTask(task)
+            return
+        }
 
         do {
             completeStep(1, for: task)
@@ -217,7 +259,15 @@ final class TaskController {
     }
 
     func recoverInterruptedTasks() async {
-        let interruptedTasks = tasks.filter { $0.status == .running }
+        let remoteTasks = tasks.filter {
+            $0.executionLocation == .server && $0.status.isActive
+        }
+        for task in remoteTasks {
+            startPollingServerTask(task)
+        }
+        let interruptedTasks = tasks.filter {
+            $0.executionLocation == .device && $0.status == .running
+        }
         for task in interruptedTasks {
             guard recoveringTaskIDs.insert(task.id).inserted else { continue }
             await recoverInterruptedTask(task)
@@ -274,6 +324,10 @@ final class TaskController {
 
     func cancelTask(taskID: UUID) async {
         guard let task = task(id: taskID) else { return }
+        if task.executionLocation == .server {
+            await cancelServerTask(task)
+            return
+        }
         if task.status == .waitingForConfirmation {
             completeStep(1, for: task)
             await finishCancellation(
@@ -532,6 +586,7 @@ final class TaskController {
             title: "任务已完成",
             body: verified.summary
         ))
+        showCompletionBanner(for: task, offerCalendarImport: false)
         queueResult(for: task)
         if reportResultImmediately {
             await reportResult(for: task)
@@ -695,14 +750,40 @@ final class TaskController {
         switch task.status {
         case .completed:
             status = .verified
+            if task.executionLocation == .server {
+                let artifactReferences = artifacts(for: task).map {
+                    AgentToolResultReport.ArtifactReference(
+                        id: $0.id,
+                        kind: $0.kind.rawValue,
+                        title: $0.title,
+                        contentType: $0.contentType,
+                        storageReference: $0.storageReference,
+                        payload: $0.payloadJSON
+                            .flatMap { $0.data(using: .utf8) }
+                            .flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+                    )
+                }
+                result = .init(
+                    summary: task.resultSummary ?? "后台任务已完成。",
+                    payload: [
+                        "serverTaskId": .string(task.id.uuidString.lowercased()),
+                        "capability": .string(capability),
+                    ],
+                    artifacts: artifactReferences.isEmpty ? nil : artifactReferences
+                )
+                reportError = nil
+                break
+            }
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime]
             formatter.timeZone = .current
             result = .init(
                 summary: task.resultSummary ?? "任务已完成并通过验证。",
-                title: task.title,
-                dueAt: task.scheduledAt.map(formatter.string(from:)),
-                timeZone: TimeZone.current.identifier
+                payload: [
+                    "title": .string(task.title),
+                    "dueAt": task.scheduledAt.map { .string(formatter.string(from: $0)) } ?? .null,
+                    "timeZone": .string(TimeZone.current.identifier),
+                ]
             )
             reportError = nil
         case .cancelled:
@@ -713,8 +794,12 @@ final class TaskController {
             status = .failed
             result = nil
             reportError = .init(
-                code: "device_execution_failed",
-                message: task.errorMessage ?? "设备端 Tool 执行失败。"
+                code: task.executionLocation == .server
+                    ? "server_execution_failed" : "device_execution_failed",
+                message: task.errorMessage ?? (
+                    task.executionLocation == .server
+                        ? "服务端任务执行失败。" : "设备端 Tool 执行失败。"
+                )
             )
         case .created, .running, .waitingForConfirmation:
             return nil
@@ -731,6 +816,264 @@ final class TaskController {
             error: reportError
         )
     }
+
+    func artifacts(for task: AgentTask) -> [TaskArtifact] {
+        let taskID = task.id
+        let descriptor = FetchDescriptor<TaskArtifact>(
+            predicate: #Predicate { $0.taskID == taskID },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    func importTravelCalendar(taskID: UUID) async {
+        guard let task = task(id: taskID),
+              let calendarImporter,
+              let artifact = artifacts(for: task).first(where: {
+                  $0.contentType == "application/vnd.wellphone.calendar-events+json"
+              }),
+              artifact.storageReference?.hasPrefix("eventkit:") != true,
+              let payloadJSON = artifact.payloadJSON,
+              let data = payloadJSON.data(using: .utf8) else { return }
+        do {
+            let identifiers = try await calendarImporter.importEvents(payload: data)
+            artifact.storageReference = "eventkit:" + identifiers.joined(separator: ",")
+            task.detail = "行程已添加到 Apple 日历。"
+            task.errorMessage = nil
+            touchAndSave(task)
+            calendarImportPrompt = nil
+        } catch {
+            task.errorMessage = error.localizedDescription
+            touchAndSave(task)
+        }
+    }
+
+    func dismissCalendarImportPrompt() {
+        calendarImportPrompt = nil
+    }
+
+    private func prepareServerTool(
+        from request: AgentToolRequest,
+        conversationID: UUID,
+        sourceMessageID: UUID?
+    ) async throws -> AgentTask {
+        guard let serverTaskClient else {
+            throw ServerTaskIntegrationError.unavailable
+        }
+        let input = try JSONDecoder().decode(
+            [String: JSONValue].self,
+            from: Data(request.arguments.utf8)
+        )
+        let title = serverTaskTitle(capability: request.capability, input: input)
+        let snapshot = try await serverTaskClient.create(
+            conversationID: conversationID,
+            toolCallID: request.id,
+            capability: request.capability,
+            title: title,
+            input: input
+        )
+        let task = AgentTask(
+            id: snapshot.id,
+            conversationID: conversationID,
+            sourceMessageID: sourceMessageID,
+            title: snapshot.title,
+            toolCallID: request.id,
+            capability: request.capability,
+            executionLocation: .server,
+            status: .waitingForConfirmation,
+            phase: .waitingForConfirmation,
+            progress: snapshot.progress,
+            detail: snapshot.detail,
+            argumentsJSON: request.arguments
+        )
+        modelContext.insert(task)
+        apply(snapshot, to: task)
+        try modelContext.save()
+        tasks.insert(task, at: 0)
+        await notifier.post(AgentTaskNotification(
+            taskID: task.id,
+            kind: .authorizationRequired,
+            title: "任务等待你的确认",
+            body: "“\(task.title)”确认后会在服务端持续运行。"
+        ))
+        return task
+    }
+
+    private func confirmServerTask(_ task: AgentTask) async {
+        guard let serverTaskClient else { return }
+        do {
+            apply(try await serverTaskClient.confirm(taskID: task.id), to: task)
+            try modelContext.save()
+            startPollingServerTask(task)
+        } catch {
+            task.errorMessage = error.localizedDescription
+            touchAndSave(task)
+        }
+    }
+
+    private func cancelServerTask(_ task: AgentTask) async {
+        guard let serverTaskClient else { return }
+        do {
+            apply(try await serverTaskClient.cancel(taskID: task.id), to: task)
+            try modelContext.save()
+            serverPollingTasks[task.id]?.cancel()
+            serverPollingTasks[task.id] = nil
+            await queueAndReportResult(for: task)
+        } catch {
+            task.errorMessage = error.localizedDescription
+            touchAndSave(task)
+        }
+    }
+
+    private func startPollingServerTask(_ task: AgentTask) {
+        guard serverPollingTasks[task.id] == nil, let serverTaskClient else { return }
+        let taskID = task.id
+        serverPollingTasks[taskID] = Task { [weak self] in
+            defer { self?.serverPollingTasks[taskID] = nil }
+            while !Task.isCancelled {
+                do {
+                    let snapshot = try await serverTaskClient.get(taskID: taskID)
+                    guard let self, let localTask = self.task(id: taskID) else { return }
+                    self.apply(snapshot, to: localTask)
+                    try self.modelContext.save()
+                    if !localTask.status.isActive {
+                        if localTask.status == .completed {
+                            await self.notifier.post(AgentTaskNotification(
+                                taskID: localTask.id,
+                                kind: .completed,
+                                title: "任务已完成",
+                                body: localTask.resultSummary ?? localTask.title
+                            ))
+                        }
+                        await self.queueAndReportResult(for: localTask)
+                        return
+                    }
+                } catch {
+                    guard let self, let localTask = self.task(id: taskID) else { return }
+                    localTask.detail = "同步暂时中断，稍后自动重试"
+                    localTask.lastExecutionErrorMessage = error.localizedDescription
+                    self.touchAndSave(localTask)
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private func apply(_ snapshot: ServerTaskSnapshot, to task: AgentTask) {
+        let wasCompleted = task.status == .completed
+        task.title = snapshot.title
+        task.status = serverStatus(snapshot.status)
+        task.phase = serverPhase(snapshot.phase, status: task.status)
+        task.progress = snapshot.progress
+        task.detail = snapshot.detail
+        task.resultSummary = snapshot.resultSummary
+        task.errorMessage = snapshot.errorMessage
+        task.executionAttemptCount = snapshot.attemptCount
+        task.updatedAt = snapshot.updatedAt
+
+        let existingSteps = steps(for: task)
+        existingSteps.forEach(modelContext.delete)
+        snapshot.steps.forEach { item in
+            modelContext.insert(AgentTaskStep(
+                taskID: task.id,
+                sequence: item.order,
+                title: item.title,
+                status: AgentTaskStepStatus(rawValue: item.status) ?? .pending
+            ))
+        }
+
+        let existingArtifactIDs = Set(artifacts(for: task).map(\.id))
+        for item in snapshot.artifacts where !existingArtifactIDs.contains(item.id) {
+            let data = item.payload.flatMap { try? JSONEncoder().encode($0) }
+            modelContext.insert(TaskArtifact(
+                id: item.id,
+                taskID: task.id,
+                kind: TaskArtifactKind(rawValue: item.kind) ?? .json,
+                title: item.title,
+                contentType: item.contentType,
+                payloadJSON: data.flatMap { String(data: $0, encoding: .utf8) },
+                storageReference: item.storageReference,
+                createdAt: item.createdAt
+            ))
+        }
+        let shouldOfferCalendar = snapshot.artifacts.contains(where: {
+               $0.contentType == "application/vnd.wellphone.calendar-events+json"
+                   && $0.storageReference?.hasPrefix("eventkit:") != true
+           })
+        if !wasCompleted, task.status == .completed {
+            showCompletionBanner(
+                for: task,
+                offerCalendarImport: shouldOfferCalendar
+            )
+        }
+    }
+
+    private func serverStatus(_ value: String) -> AgentTaskStatus {
+        switch value {
+        case "queued": .created
+        case "running": .running
+        case "completed": .completed
+        case "failed": .failed
+        case "cancelled": .cancelled
+        default: .waitingForConfirmation
+        }
+    }
+
+    private func serverPhase(_ value: String, status: AgentTaskStatus) -> AgentTaskPhase {
+        switch status {
+        case .waitingForConfirmation: .waitingForConfirmation
+        case .completed: .completed
+        case .failed: .failed
+        case .cancelled: .cancelled
+        case .created: .planning
+        case .running:
+            value == "understanding" || value == "planning" ? .planning : .executing
+        }
+    }
+
+    private func serverTaskTitle(
+        capability: String,
+        input: [String: JSONValue]
+    ) -> String {
+        if capability == "travel.plan",
+           case .string(let destination) = input["destination"] {
+            return "规划 \(destination) 旅行"
+        }
+        return "后台任务"
+    }
+
+    private func showCompletionBanner(
+        for task: AgentTask,
+        offerCalendarImport: Bool
+    ) {
+        completionBannerTask?.cancel()
+        let banner = CompletionBanner(
+            taskID: task.id,
+            title: task.title,
+            summary: task.resultSummary ?? "任务已经完成。"
+        )
+        completionBanner = banner
+        completionBannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(2_500))
+            guard !Task.isCancelled, let self else { return }
+            if self.completionBanner?.id == banner.id {
+                self.completionBanner = nil
+            }
+            if offerCalendarImport {
+                self.calendarImportPrompt = CalendarImportPrompt(
+                    taskID: task.id,
+                    title: task.title
+                )
+            }
+            self.completionBannerTask = nil
+        }
+    }
+}
+
+private enum ServerTaskIntegrationError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? { "后台任务服务尚未配置。" }
 }
 
 private enum TaskRecoveryError: LocalizedError {

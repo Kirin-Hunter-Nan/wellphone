@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from pydantic import (
@@ -10,6 +11,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from app.protocol import ToolRequest
@@ -59,20 +61,49 @@ class ReminderCreateArguments(BaseModel):
         return stripped or None
 
 
+class TravelPlanArguments(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    destination: str = Field(min_length=1, max_length=200)
+    start_date: date = Field(alias="startDate")
+    end_date: date = Field(alias="endDate")
+    origin: str | None = Field(default=None, max_length=200)
+    preferences: list[str] = Field(default_factory=list, max_length=12)
+    pace: str = Field(default="balanced", pattern="^(relaxed|balanced|intensive)$")
+    travelers: str | None = Field(default=None, max_length=300)
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_trip_length(self) -> "TravelPlanArguments":
+        duration = (self.end_date - self.start_date).days + 1
+        if duration < 1 or duration > 14:
+            raise ValueError("Trip duration must be between 1 and 14 days")
+        return self
+
+
 class ModelToolCatalog:
     def __init__(self) -> None:
-        self._tools: dict[str, tuple[str, type[BaseModel], str]] = {
+        self._tools: dict[str, tuple[str, type[BaseModel], str, str]] = {
             "reminder_create": (
                 "reminder.create",
                 ReminderCreateArguments,
                 "Prepare one Apple Reminders item for explicit user confirmation. "
                 "Do not use for general questions or discussions about reminders.",
+                "device",
+            ),
+            "travel_plan": (
+                "travel.plan",
+                TravelPlanArguments,
+                "Start a multi-step travel planning task after the user has supplied a "
+                "destination and exact start and end dates. Ask for missing dates before "
+                "using this tool. The app will request confirmation before starting.",
+                "server",
             ),
         }
 
     def model_definitions(self) -> list[dict[str, object]]:
         definitions: list[dict[str, object]] = []
-        for model_name, (_, arguments_type, description) in self._tools.items():
+        for model_name, (_, arguments_type, description, _) in self._tools.items():
             definitions.append(
                 {
                     "type": "function",
@@ -96,7 +127,7 @@ class ModelToolCatalog:
         if registered is None:
             raise ToolCatalogError(f"Unregistered model tool: {model_name}")
 
-        capability, arguments_type, _ = registered
+        capability, arguments_type, _, execution_location = registered
         try:
             raw_arguments = json.loads(arguments_json)
             arguments = arguments_type.model_validate(raw_arguments)
@@ -111,5 +142,6 @@ class ModelToolCatalog:
         return ToolRequest(
             toolCallId=tool_call_id,
             capability=capability,
+            executionLocation=execution_location,
             arguments=dumped,
         )

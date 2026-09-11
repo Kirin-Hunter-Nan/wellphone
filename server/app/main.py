@@ -37,6 +37,12 @@ from app.task_store import (
     TaskCheckpointConflictError,
     TaskCheckpointStore,
 )
+from app.jobs import (
+    InMemoryServerTaskStore,
+    PostgreSQLServerTaskStore,
+    ServerTaskCreate,
+    ServerTaskStore,
+)
 
 
 def create_app(
@@ -46,6 +52,7 @@ def create_app(
     result_store: ToolResultStore | None = None,
     chat_request_store: ChatRequestStore | None = None,
     task_checkpoint_store: TaskCheckpointStore | None = None,
+    server_task_store: ServerTaskStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -68,18 +75,28 @@ def create_app(
                 if result_store is not None
                 else PostgreSQLTaskCheckpointStore(resolved_settings.database_url)
             )
+        resolved_server_task_store = server_task_store
+        if resolved_server_task_store is None:
+            resolved_server_task_store = (
+                InMemoryServerTaskStore()
+                if result_store is not None
+                else PostgreSQLServerTaskStore(resolved_settings.database_url)
+            )
         await resolved_result_store.initialize()
         await resolved_chat_request_store.initialize()
         await resolved_task_checkpoint_store.initialize()
+        await resolved_server_task_store.initialize()
         app.state.settings = resolved_settings
         app.state.provider = resolved_provider
         app.state.result_store = resolved_result_store
         app.state.chat_request_store = resolved_chat_request_store
         app.state.task_checkpoint_store = resolved_task_checkpoint_store
+        app.state.server_task_store = resolved_server_task_store
         try:
             yield
         finally:
             await resolved_provider.close()
+            await resolved_server_task_store.close()
             await resolved_task_checkpoint_store.close()
             await resolved_chat_request_store.close()
             await resolved_result_store.close()
@@ -96,10 +113,12 @@ def create_app(
         active_store: ToolResultStore = request.app.state.result_store
         active_chat_store: ChatRequestStore = request.app.state.chat_request_store
         active_task_store: TaskCheckpointStore = request.app.state.task_checkpoint_store
+        active_server_task_store: ServerTaskStore = request.app.state.server_task_store
         if (
             not await active_store.is_healthy()
             or not await active_chat_store.is_healthy()
             or not await active_task_store.is_healthy()
+            or not await active_server_task_store.is_healthy()
         ):
             return _error(503, "database_unavailable", "Database is unavailable")
         return {
@@ -304,34 +323,43 @@ def create_app(
         if claim.status == "completed":
             existing_reply = claim.assistant_reply
         else:
-            active_provider: ModelProvider = request.app.state.provider
-            try:
-                existing_reply = await active_provider.continue_reply(context, submission)
+            deterministic_reply = _deterministic_tool_followup(submission)
+            if deterministic_reply is not None:
+                existing_reply = deterministic_reply
                 await active_store.save_assistant_reply(
                     conversation_id,
                     submission.tool_call_id,
                     existing_reply,
                 )
-            except ProviderError:
-                await active_store.fail_continuation(
-                    conversation_id,
-                    submission.tool_call_id,
-                    "model_upstream_error",
-                )
-                return _error(
-                    502,
-                    "model_upstream_error",
-                    "设备操作结果已经保存，但模型暂时无法生成最终回复。",
-                )
-            except BaseException:
-                await _finish_store_operation(
-                    active_store.fail_continuation(
+            else:
+                active_provider: ModelProvider = request.app.state.provider
+                try:
+                    existing_reply = await active_provider.continue_reply(context, submission)
+                    await active_store.save_assistant_reply(
                         conversation_id,
                         submission.tool_call_id,
-                        "continuation_interrupted",
+                        existing_reply,
                     )
-                )
-                raise
+                except ProviderError:
+                    await active_store.fail_continuation(
+                        conversation_id,
+                        submission.tool_call_id,
+                        "model_upstream_error",
+                    )
+                    return _error(
+                        502,
+                        "model_upstream_error",
+                        "设备操作结果已经保存，但模型暂时无法生成最终回复。",
+                    )
+                except BaseException:
+                    await _finish_store_operation(
+                        active_store.fail_continuation(
+                            conversation_id,
+                            submission.tool_call_id,
+                            "continuation_interrupted",
+                        )
+                    )
+                    raise
         if existing_reply is None:
             return _error(
                 500,
@@ -380,6 +408,53 @@ def create_app(
             "protocolVersion": PROTOCOL_VERSION,
         }
 
+    @application.post("/v1/conversations/{conversation_id}/tasks", status_code=201)
+    async def create_server_task(conversation_id: UUID, request: Request):
+        active_settings: Settings = request.app.state.settings
+        body_or_error = await _read_body(request, active_settings.max_request_bytes)
+        if isinstance(body_or_error, JSONResponse):
+            return body_or_error
+        try:
+            task_request = ServerTaskCreate.model_validate_json(body_or_error)
+        except ValidationError as error:
+            return _error(400, "invalid_request", _validation_message(error))
+        store: ServerTaskStore = request.app.state.server_task_store
+        task = await store.create(conversation_id, task_request)
+        return task.model_dump(mode="json", by_alias=True)
+
+    @application.get("/v1/conversations/{conversation_id}/tasks")
+    async def list_server_tasks(conversation_id: UUID, request: Request):
+        store: ServerTaskStore = request.app.state.server_task_store
+        tasks = await store.list(conversation_id)
+        return {
+            "tasks": [task.model_dump(mode="json", by_alias=True) for task in tasks],
+            "protocolVersion": PROTOCOL_VERSION,
+        }
+
+    @application.get("/v1/tasks/{task_id}")
+    async def get_server_task(task_id: UUID, request: Request):
+        store: ServerTaskStore = request.app.state.server_task_store
+        task = await store.get(task_id)
+        if task is None:
+            return _error(404, "task_not_found", "Task does not exist")
+        return task.model_dump(mode="json", by_alias=True)
+
+    @application.post("/v1/tasks/{task_id}/confirm")
+    async def confirm_server_task(task_id: UUID, request: Request):
+        store: ServerTaskStore = request.app.state.server_task_store
+        task = await store.confirm(task_id)
+        if task is None:
+            return _error(404, "task_not_found", "Task does not exist")
+        return task.model_dump(mode="json", by_alias=True)
+
+    @application.post("/v1/tasks/{task_id}/cancel")
+    async def cancel_server_task(task_id: UUID, request: Request):
+        store: ServerTaskStore = request.app.state.server_task_store
+        task = await store.cancel(task_id)
+        if task is None:
+            return _error(404, "task_not_found", "Task does not exist")
+        return task.model_dump(mode="json", by_alias=True)
+
     return application
 
 
@@ -410,6 +485,38 @@ def _assistant_content(events: list[str]) -> str | None:
                     chunks.append(text)
     content = "".join(chunks).strip()
     return content or None
+
+
+def _deterministic_tool_followup(submission: ToolResultSubmission) -> str | None:
+    if submission.capability != "travel.plan":
+        return None
+    if submission.status == "verified":
+        summary = "旅行规划已经完成。"
+        itinerary_text: str | None = None
+        if submission.result:
+            supplied = submission.result.get("summary")
+            if isinstance(supplied, str) and supplied.strip():
+                summary = supplied.strip()
+            artifacts = submission.result.get("artifacts")
+            if isinstance(artifacts, list):
+                for artifact in artifacts:
+                    if not isinstance(artifact, dict):
+                        continue
+                    payload = artifact.get("payload")
+                    if (
+                        artifact.get("contentType") == "text/markdown"
+                        and isinstance(payload, str)
+                        and payload.strip()
+                    ):
+                        itinerary_text = payload.strip()
+                        break
+        if itinerary_text:
+            return f"{summary}\n\n{itinerary_text}"
+        return f"{summary}\n\n当前结果没有可展示的文本行程，请在任务详情中查看。"
+    if submission.status == "declined":
+        return "旅行规划任务已取消，没有生成或写入任何行程。"
+    message = submission.error.message if submission.error else "旅行规划暂时未能完成。"
+    return f"旅行规划失败：{message}"
 
 
 def _validation_message(error: ValidationError) -> str:

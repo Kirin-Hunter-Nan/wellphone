@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.chat_store import InMemoryChatRequestStore
 from app.config import Settings
-from app.main import _finish_store_operation, create_app
+from app.main import _deterministic_tool_followup, _finish_store_operation, create_app
 from app.postgres_store import InMemoryToolResultStore
 from app.protocol import (
     ChatRequest,
@@ -22,6 +22,34 @@ class FakeStream:
     async def events(self) -> AsyncIterator[str]:
         yield encode_sse(assistant_delta("resp_test", "你好"))
         yield encode_sse(response_completed("resp_test"))
+
+
+def test_travel_tool_followup_points_to_task_detail_without_claiming_files() -> None:
+    submission = ToolResultSubmission.model_validate({
+        "requestId": "result_travel",
+        "protocolVersion": "1.0",
+        "toolCallId": "call_travel",
+        "taskId": "39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7",
+        "capability": "travel.plan",
+        "status": "verified",
+        "result": {
+            "summary": "上海三日行程已完成。",
+            "artifacts": [{
+                "id": "cc37e242-41ec-4d10-a730-f69605483c24",
+                "kind": "text",
+                "title": "上海三日行程（文本版）",
+                "contentType": "text/markdown",
+                "payload": "# 上海三日行程\n\n## 第一天\n\n- 上海博物馆",
+            }],
+        },
+    })
+
+    reply = _deterministic_tool_followup(submission)
+
+    assert reply is not None
+    assert "# 上海三日行程" in reply
+    assert "上海博物馆" in reply
+    assert "文件" not in reply
 
 
 class FakeProvider:
@@ -116,6 +144,36 @@ def settings() -> Settings:
         base_url="https://workspace.example.com/compatible-mode/v1/",
         model="qwen-test",
     )
+
+
+def test_server_task_lifecycle_endpoints() -> None:
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+    )
+    conversation_id = "39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7"
+
+    with TestClient(app) as client:
+        created = client.post(
+            f"/v1/conversations/{conversation_id}/tasks",
+            json={
+                "capability": "system.long-task-probe",
+                "title": "验证后台任务",
+                "input": {"message": "hello"},
+                "requiresConfirmation": True,
+            },
+        )
+        task_id = created.json()["id"]
+        listed = client.get(f"/v1/conversations/{conversation_id}/tasks")
+        confirmed = client.post(f"/v1/tasks/{task_id}/confirm")
+        fetched = client.get(f"/v1/tasks/{task_id}")
+
+    assert created.status_code == 201
+    assert created.json()["status"] == "waitingForConfirmation"
+    assert listed.json()["tasks"][0]["id"] == task_id
+    assert confirmed.json()["status"] == "queued"
+    assert fetched.json()["status"] == "queued"
 
 
 def test_health_and_message_stream() -> None:

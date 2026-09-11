@@ -7,7 +7,8 @@
   "properties": {
     "toolCallId": { "type": "string", "minLength": 1 },
     "capability": { "type": "string", "minLength": 1 },
+    "executionLocation": { "enum": ["device", "server"] },
     "arguments": { "type": "object" }
   },
-  "required": ["toolCallId", "capability", "arguments"]
+  "required": ["toolCallId", "capability", "executionLocation", "arguments"]
 }

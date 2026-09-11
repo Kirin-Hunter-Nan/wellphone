@@ -13,7 +13,31 @@
     "status": {
       "enum": ["verified", "declined", "failed"]
     },
-    "result": { "type": "object" },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "payload": { "type": "object" },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "format": "uuid" },
+              "kind": { "type": "string", "minLength": 1 },
+              "title": { "type": "string", "minLength": 1 },
+              "contentType": { "type": "string", "minLength": 1 },
+              "storageReference": { "type": "string", "minLength": 1 },
+              "payload": {}
+            },
+            "required": ["id", "kind", "title", "contentType"]
+          }
+        }
+      },
+      "required": ["summary"]
+    },
     "error": {
       "type": "object",
       "additionalProperties": false,

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/protocol/content-part.schema.json",
+  "title": "WellPhone ContentPart",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "text" },
+        "text": { "type": "string", "minLength": 1 }
+      },
+      "required": ["type", "text"]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "image_url" },
+        "image_url": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^(https://|data:image/)"
+            }
+          },
+          "required": ["url"]
+        }
+      },
+      "required": ["type", "image_url"]
+    }
+  ]
+}

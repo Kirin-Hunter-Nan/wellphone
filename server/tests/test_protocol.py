@@ -4,7 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.protocol import (
+    AttachmentReference,
     ChatRequest,
+    TaskArtifact,
     TaskCheckpointSubmission,
     ToolResultSubmission,
     assistant_delta,
@@ -44,6 +46,30 @@ def test_accepts_text_and_multimodal_messages() -> None:
     parsed = ChatRequest.model_validate(request)
     assert len(parsed.messages) == 2
     assert parsed.device_context.time_zone == "Asia/Shanghai"
+
+
+def test_validates_attachment_references_and_task_artifacts() -> None:
+    attachment = AttachmentReference.model_validate({
+        "id": "cc37e242-41ec-4d10-a730-f69605483c24",
+        "kind": "image",
+        "mimeType": "image/jpeg",
+        "byteCount": 1024,
+        "width": 800,
+        "height": 600,
+        "storageReference": "attachments/cc37e242.jpg",
+    })
+    artifact = TaskArtifact.model_validate({
+        "id": "0ba3420c-b499-4c30-8130-f054cf5b51de",
+        "taskId": "395dd81c-a5bd-4906-9586-42d3c3dd80f5",
+        "kind": "itinerary",
+        "title": "上海三日行程",
+        "contentType": "application/vnd.wellphone.itinerary+json",
+        "payload": {"days": []},
+        "createdAt": "2026-09-11T03:00:00Z",
+    })
+
+    assert attachment.mime_type == "image/jpeg"
+    assert artifact.kind == "itinerary"
 
 
 def test_rejects_unknown_protocol_and_assistant_final_message() -> None:

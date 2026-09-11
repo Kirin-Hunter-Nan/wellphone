@@ -42,6 +42,25 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func multimodalPromptUsesOpenAICompatibleContentParts() throws {
+        let original = ChatPromptMessage(role: .user, parts: [
+            .text("这张图片里有什么？"),
+            .imageURL("https://example.com/image.jpg"),
+        ])
+        let data = try JSONEncoder().encode(original)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let parts = try #require(object["content"] as? [[String: Any]])
+
+        #expect(parts.count == 2)
+        #expect(parts[0]["type"] as? String == "text")
+        #expect(parts[1]["type"] as? String == "image_url")
+        #expect((parts[1]["image_url"] as? [String: Any])?["url"] as? String == "https://example.com/image.jpg")
+        #expect(try JSONDecoder().decode(ChatPromptMessage.self, from: data) == original)
+    }
+
+    @Test @MainActor
     func wellPhoneStreamDecoderReadsDeltasAndCompletion() throws {
         let delta = #"data: {"type":"assistant.delta","protocolVersion":"1.0","responseId":"resp_1","text":"你好"}"#
         let completed = #"data: {"type":"response.completed","protocolVersion":"1.0","responseId":"resp_1"}"#
@@ -278,9 +297,16 @@ struct WellPhoneTests {
         #expect(reports.count == 1)
         #expect(reports.first?.result.toolCallID == "call_1")
         #expect(reports.first?.result.status == .verified)
-        #expect(reports.first?.result.result?.title == "提交报销")
-        #expect(reports.first?.result.result?.dueAt != nil)
-        #expect(reports.first?.result.result?.timeZone == TimeZone.current.identifier)
+        #expect(reports.first?.result.result?.payload?["title"] == .string("提交报销"))
+        if case .string(let dueAt) = reports.first?.result.result?.payload?["dueAt"] {
+            #expect(!dueAt.isEmpty)
+        } else {
+            Issue.record("Expected a dueAt value in the generic Tool result payload")
+        }
+        #expect(
+            reports.first?.result.result?.payload?["timeZone"]
+                == .string(TimeZone.current.identifier)
+        )
         #expect(executor.lastIdempotencyKey == task.id.uuidString.lowercased())
 
         for _ in 0..<100 {
@@ -994,8 +1020,10 @@ struct WellPhoneTests {
         let schema = Schema([
             Conversation.self,
             ChatMessage.self,
+            ChatAttachment.self,
             AgentTask.self,
             AgentTaskStep.self,
+            TaskArtifact.self,
         ])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try ModelContainer(for: schema, configurations: [configuration])

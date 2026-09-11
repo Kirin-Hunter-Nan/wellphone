@@ -51,6 +51,36 @@ ContentPart = Annotated[
 ]
 
 
+class AttachmentReference(BaseModel):
+    """Metadata-only reference; attachment bytes live outside protocol records."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: UUID
+    kind: Literal["image", "pdf", "audio", "file"]
+    mime_type: str = Field(alias="mimeType", min_length=1)
+    original_filename: str | None = Field(default=None, alias="originalFilename")
+    byte_count: int | None = Field(default=None, alias="byteCount", ge=0)
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    storage_reference: str | None = Field(default=None, alias="storageReference")
+
+
+class TaskArtifact(BaseModel):
+    """A durable task output that can be rendered independently of chat text."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: UUID
+    task_id: UUID = Field(alias="taskId")
+    kind: Literal["itinerary", "json", "text", "image", "pdf", "map"]
+    title: str = Field(min_length=1, max_length=300)
+    content_type: str = Field(alias="contentType", min_length=1)
+    payload: dict[str, object] | list[object] | str | None = None
+    storage_reference: str | None = Field(default=None, alias="storageReference")
+    created_at: datetime = Field(alias="createdAt")
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +127,9 @@ class ToolRequest(BaseModel):
 
     tool_call_id: str = Field(alias="toolCallId", min_length=1)
     capability: str = Field(min_length=1)
+    execution_location: Literal["device", "server"] = Field(
+        default="device", alias="executionLocation"
+    )
     arguments: dict[str, object]
 
 

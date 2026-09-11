@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 struct ChatView: View {
     @Environment(ConversationController.self) private var controller
@@ -6,6 +7,7 @@ struct ChatView: View {
     @FocusState private var isComposerFocused: Bool
     @State private var isSidebarPresented = false
     @State private var isTaskCenterPresented = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
 
     var body: some View {
         @Bindable var controller = controller
@@ -72,10 +74,42 @@ struct ChatView: View {
                 }
             }
             .animation(.snappy, value: isSidebarPresented)
+            .overlay(alignment: .top) {
+                if let banner = taskController.completionBanner {
+                    TaskCompletionBannerView(banner: banner)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(10)
+                }
+            }
+            .animation(.snappy, value: taskController.completionBanner?.id)
             .onReceive(NotificationCenter.default.publisher(for: .agentTaskNotificationOpened)) { _ in
                 isComposerFocused = false
                 isSidebarPresented = false
                 isTaskCenterPresented = true
+            }
+            .alert(
+                "是否添加到 Apple 日历？",
+                isPresented: Binding(
+                    get: { taskController.calendarImportPrompt != nil },
+                    set: { presented in
+                        if !presented { taskController.dismissCalendarImportPrompt() }
+                    }
+                )
+            ) {
+                Button("暂不", role: .cancel) {
+                    taskController.dismissCalendarImportPrompt()
+                }
+                if let prompt = taskController.calendarImportPrompt {
+                    Button("添加到日历") {
+                        Task { await taskController.importTravelCalendar(taskID: prompt.taskID) }
+                    }
+                }
+            } message: {
+                if let prompt = taskController.calendarImportPrompt {
+                    Text("“\(prompt.title)”已经生成。你可以将每天的安排写入系统日历。")
+                }
             }
         }
     }
@@ -151,9 +185,51 @@ struct ChatView: View {
 
     private func composer(draft: Binding<String>) -> some View {
         let canSend = !controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !controller.pendingImages.isEmpty
 
-        return HStack(alignment: .bottom, spacing: 8) {
-            TextField("给 WellPhone 发消息…", text: draft, axis: .vertical)
+        return VStack(spacing: 6) {
+            if !controller.pendingImages.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(controller.pendingImages) { image in
+                            ZStack(alignment: .topTrailing) {
+                                if let preview = UIImage(data: image.data) {
+                                    Image(uiImage: preview)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                Button {
+                                    controller.removePendingImage(id: image.id)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.white, .black.opacity(0.65))
+                                }
+                                .offset(x: 5, y: -5)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 6)
+                }
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                PhotosPicker(
+                    selection: $selectedPhotoItems,
+                    maxSelectionCount: max(1, 4 - controller.pendingImages.count),
+                    matching: .images
+                ) {
+                    Image(systemName: "photo.on.rectangle")
+                        .font(.system(size: 18))
+                        .frame(width: 34, height: 36)
+                }
+                .disabled(controller.isGenerating || controller.pendingImages.count >= 4)
+                .accessibilityLabel("选择图片")
+
+                TextField("给 WellPhone 发消息…", text: draft, axis: .vertical)
                 .lineLimit(1...6)
                 .textFieldStyle(.plain)
                 .accessibilityIdentifier("chat.composer")
@@ -167,8 +243,8 @@ struct ChatView: View {
                     controller.sendDraft()
                 }
 
-            Group {
-                if controller.isGenerating {
+                Group {
+                    if controller.isGenerating {
                     Button {
                         controller.stopGenerating()
                     } label: {
@@ -179,7 +255,7 @@ struct ChatView: View {
                             .background(Color.primary, in: Circle())
                     }
                     .accessibilityLabel("停止生成")
-                } else {
+                    } else {
                     Button {
                         controller.sendDraft()
                     } label: {
@@ -191,9 +267,10 @@ struct ChatView: View {
                     }
                     .disabled(!canSend)
                     .accessibilityLabel("发送")
+                    }
                 }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(6)
         .background(
@@ -209,6 +286,50 @@ struct ChatView: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .background(.bar)
+        .onChange(of: selectedPhotoItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task {
+                for item in items {
+                    do {
+                        if let data = try await item.loadTransferable(type: Data.self) {
+                            try controller.addImage(data: data)
+                        }
+                    } catch {
+                        controller.showAttachmentError(error)
+                    }
+                }
+                selectedPhotoItems = []
+            }
+        }
+    }
+}
+
+private struct TaskCompletionBannerView: View {
+    let banner: TaskController.CompletionBanner
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.green)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("任务完成")
+                    .font(.headline)
+                Text(banner.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("任务完成：\(banner.title)。\(banner.summary)")
     }
 }
 
@@ -220,14 +341,19 @@ private struct ChatMessageRow: View {
     var body: some View {
         if let taskID = message.relatedTaskID,
            let task = taskController.task(id: taskID) {
-            ReminderTaskCard(task: task)
+            if task.status == .completed,
+               task.resultReportState == .delivered {
+                EmptyView()
+            } else {
+                AgentTaskCard(task: task)
+            }
         } else {
             MessageBubble(message: message, retry: retry)
         }
     }
 }
 
-private struct ReminderTaskCard: View {
+private struct AgentTaskCard: View {
     @Environment(TaskController.self) private var controller
     @Bindable var task: AgentTask
 
@@ -237,7 +363,7 @@ private struct ReminderTaskCard: View {
                 Image(systemName: statusIcon)
                     .foregroundStyle(statusColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("提醒事项")
+                    Text(task.executionLocation == .server ? "后台任务" : "提醒事项")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(task.title)
@@ -262,7 +388,9 @@ private struct ReminderTaskCard: View {
             }
 
             if task.status == .waitingForConfirmation {
-                Text("确认后才会请求系统权限并写入提醒事项。")
+                Text(task.executionLocation == .server
+                     ? "确认后任务会在服务端持续运行。"
+                     : "确认后才会请求系统权限并写入提醒事项。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -274,7 +402,7 @@ private struct ReminderTaskCard: View {
 
                     Spacer()
 
-                    Button("确认创建") {
+                    Button(task.executionLocation == .server ? "确认开始" : "确认创建") {
                         Task { await controller.confirmTask(taskID: task.id) }
                     }
                     .buttonStyle(.borderedProminent)
@@ -289,7 +417,9 @@ private struct ReminderTaskCard: View {
                         }
                         .buttonStyle(.bordered)
                     } else {
-                        Text("正在安全停止，不会开始新的系统写入。")
+                        Text(task.executionLocation == .server
+                             ? "正在停止后台任务。"
+                             : "正在安全停止，不会开始新的系统写入。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -342,6 +472,7 @@ private struct EmptyConversationView: View {
 }
 
 private struct MessageBubble: View {
+    @Environment(ConversationController.self) private var controller
     @Bindable var message: ChatMessage
     let retry: () -> Void
 
@@ -352,7 +483,25 @@ private struct MessageBubble: View {
             }
 
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
-                Text(message.text.isEmpty ? " " : message.text)
+                let attachments = controller.attachments(for: message)
+                if !attachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(attachments) { attachment in
+                                if let path = attachment.localPath,
+                                   let image = UIImage(contentsOfFile: path) {
+                                    Image(uiImage: image)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 180, height: 150)
+                                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                                }
+                            }
+                        }
+                    }
+                }
+                if !message.text.isEmpty || attachments.isEmpty {
+                    renderedText
                     .textSelection(.enabled)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -368,6 +517,7 @@ private struct MessageBubble: View {
                                 .padding(.horizontal, 14)
                         }
                     }
+                }
 
                 if message.role == .assistant,
                    [.failed, .stopped].contains(message.deliveryState) {
@@ -383,5 +533,17 @@ private struct MessageBubble: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var renderedText: Text {
+        let content = message.text.isEmpty ? " " : message.text
+        guard message.role == .assistant,
+              let attributed = try? AttributedString(
+                  markdown: content,
+                  options: .init(interpretedSyntax: .full)
+              ) else {
+            return Text(content)
+        }
+        return Text(attributed)
     }
 }

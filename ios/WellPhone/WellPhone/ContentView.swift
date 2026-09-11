@@ -28,8 +28,10 @@ private struct PreviewRoot: View {
         let schema = Schema([
             Conversation.self,
             ChatMessage.self,
+            ChatAttachment.self,
             AgentTask.self,
             AgentTaskStep.self,
+            TaskArtifact.self,
         ])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try! ModelContainer(for: schema, configurations: [configuration])

@@ -1,14 +1,117 @@
 import Foundation
 
+enum ChatPromptContentPart: Codable, Equatable, Sendable {
+    case text(String)
+    case imageURL(String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case imageURL = "image_url"
+    }
+
+    private struct ImageURLBody: Codable, Equatable, Sendable {
+        let url: String
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "text":
+            self = .text(try container.decode(String.self, forKey: .text))
+        case "image_url":
+            let body = try container.decode(ImageURLBody.self, forKey: .imageURL)
+            self = .imageURL(body.url)
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unsupported chat content part."
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let text):
+            try container.encode("text", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .imageURL(let url):
+            try container.encode("image_url", forKey: .type)
+            try container.encode(ImageURLBody(url: url), forKey: .imageURL)
+        }
+    }
+}
+
+enum ChatPromptContent: Codable, Equatable, Sendable {
+    case text(String)
+    case parts([ChatPromptContentPart])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            self = .text(text)
+        } else {
+            self = .parts(try container.decode([ChatPromptContentPart].self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .text(let text):
+            try container.encode(text)
+        case .parts(let parts):
+            try container.encode(parts)
+        }
+    }
+
+    var plainText: String {
+        switch self {
+        case .text(let text):
+            text
+        case .parts(let parts):
+            parts.compactMap {
+                if case .text(let text) = $0 { return text }
+                return nil
+            }.joined(separator: "\n")
+        }
+    }
+}
+
 struct ChatPromptMessage: Codable, Equatable, Sendable {
     let role: MessageRole
-    let content: String
+    let content: ChatPromptContent
+
+    init(role: MessageRole, content: String) {
+        self.role = role
+        self.content = .text(content)
+    }
+
+    init(role: MessageRole, parts: [ChatPromptContentPart]) {
+        self.role = role
+        self.content = .parts(parts)
+    }
 }
 
 struct AgentToolRequest: Equatable, Sendable {
     let id: String
     let capability: String
     let arguments: String
+    let executionLocation: TaskExecutionLocation
+
+    init(
+        id: String,
+        capability: String,
+        arguments: String,
+        executionLocation: TaskExecutionLocation = .device
+    ) {
+        self.id = id
+        self.capability = capability
+        self.arguments = arguments
+        self.executionLocation = executionLocation
+    }
 }
 
 enum ModelGatewayEvent: Equatable, Sendable {
@@ -34,7 +137,7 @@ struct DemoModelGateway: ModelGateway {
         requestID: String
     ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
         _ = requestID
-        let latestInput = messages.last(where: { $0.role == .user })?.content ?? ""
+        let latestInput = messages.last(where: { $0.role == .user })?.content.plainText ?? ""
         let response = responseText(for: latestInput)
 
         return AsyncThrowingStream { continuation in

@@ -25,6 +25,10 @@ class Settings:
     conversation_context_messages: int = 40
     conversation_context_characters: int = 32_000
     continuation_lease_seconds: int = 150
+    task_worker_lease_seconds: int = 300
+    task_worker_poll_seconds: int = 2
+    task_worker_max_attempts: int = 3
+    apple_maps_token: str | None = None
     database_url: str = "postgresql://wellphone:wellphone-local-dev@127.0.0.1:5432/wellphone"
 
 
@@ -70,6 +74,22 @@ def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
             150,
             "CONTINUATION_LEASE_SECONDS",
         ),
+        task_worker_lease_seconds=_positive_integer(
+            environment.get("TASK_WORKER_LEASE_SECONDS"),
+            300,
+            "TASK_WORKER_LEASE_SECONDS",
+        ),
+        task_worker_poll_seconds=_positive_integer(
+            environment.get("TASK_WORKER_POLL_SECONDS"),
+            2,
+            "TASK_WORKER_POLL_SECONDS",
+        ),
+        task_worker_max_attempts=_positive_integer(
+            environment.get("TASK_WORKER_MAX_ATTEMPTS"),
+            3,
+            "TASK_WORKER_MAX_ATTEMPTS",
+        ),
+        apple_maps_token=environment.get("APPLE_MAPS_TOKEN", "").strip() or None,
         database_url=environment.get("DATABASE_URL", "").strip()
         or "postgresql://wellphone:wellphone-local-dev@127.0.0.1:5432/wellphone",
     )

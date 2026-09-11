@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/protocol/attachment-reference.schema.json",
+  "title": "WellPhone AttachmentReference",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "kind": { "enum": ["image", "pdf", "audio", "file"] },
+    "mimeType": { "type": "string", "minLength": 1 },
+    "originalFilename": { "type": "string" },
+    "byteCount": { "type": "integer", "minimum": 0 },
+    "width": { "type": "integer", "minimum": 1 },
+    "height": { "type": "integer", "minimum": 1 },
+    "storageReference": { "type": "string", "minLength": 1 }
+  },
+  "required": ["id", "kind", "mimeType"]
+}
