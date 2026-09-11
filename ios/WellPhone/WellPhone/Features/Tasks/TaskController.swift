@@ -81,25 +81,26 @@ final class TaskController {
     }
 
     func prepareTool(
-        from call: ModelToolCall,
+        from request: AgentToolRequest,
         conversationID: UUID,
         sourceMessageID: UUID?
     ) async throws -> AgentTask {
-        let request = try runtime.prepare(call: call)
-        let prepared = request.task
-        let requiresConfirmation = request.descriptor.confirmationPolicy == .always
+        let preparedRequest = try runtime.prepare(request: request)
+        let prepared = preparedRequest.task
+        let requiresConfirmation = preparedRequest.descriptor.confirmationPolicy == .always
         let task = AgentTask(
             conversationID: conversationID,
             sourceMessageID: sourceMessageID,
             title: prepared.title,
-            capability: request.descriptor.capability,
+            toolCallID: request.id,
+            capability: preparedRequest.descriptor.capability,
             status: requiresConfirmation ? .waitingForConfirmation : .created,
             phase: requiresConfirmation ? .waitingForConfirmation : .planning,
             progress: requiresConfirmation ? 0.35 : 0.2,
             detail: prepared.detail,
             scheduledAt: prepared.scheduledAt,
             targetName: prepared.targetName,
-            argumentsJSON: call.arguments
+            argumentsJSON: request.arguments
         )
         modelContext.insert(task)
 

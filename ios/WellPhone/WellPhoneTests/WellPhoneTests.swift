@@ -41,25 +41,36 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func qwenStreamDecoderReadsDeltasAndDone() throws {
-        let delta = #"data: {"choices":[{"delta":{"content":"你好"}}]}"#
+    func wellPhoneStreamDecoderReadsDeltasAndCompletion() throws {
+        let delta = #"data: {"type":"assistant.delta","protocolVersion":"1.0","responseId":"resp_1","text":"你好"}"#
+        let completed = #"data: {"type":"response.completed","protocolVersion":"1.0","responseId":"resp_1"}"#
 
-        #expect(try QwenStreamDecoder.decode(line: delta) == .textDelta("你好"))
-        #expect(try QwenStreamDecoder.decode(line: "data: [DONE]") == .done)
-        #expect(try QwenStreamDecoder.decode(line: ": keep-alive") == .ignored)
+        #expect(try WellPhoneStreamDecoder.decode(line: delta) == .textDelta("你好"))
+        #expect(try WellPhoneStreamDecoder.decode(line: completed) == .completed)
+        #expect(try WellPhoneStreamDecoder.decode(line: ": keep-alive") == .ignored)
     }
 
     @Test @MainActor
-    func qwenStreamDecoderReadsToolCallDelta() throws {
-        let line = #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"reminder_create","arguments":"{\"title\":"}}]}}]}"#
-        #expect(
-            try QwenStreamDecoder.decode(line: line) == .toolCallDelta(
-                index: 0,
-                id: "call_1",
-                name: "reminder_create",
-                arguments: #"{"title":"#
-            )
-        )
+    func wellPhoneStreamDecoderReadsCapabilityRequest() throws {
+        let line = #"data: {"type":"tool.requested","protocolVersion":"1.0","responseId":"resp_1","toolCallId":"call_1","capability":"reminder.create","arguments":{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}}"#
+        let event = try WellPhoneStreamDecoder.decode(line: line)
+        guard case .toolRequested(let request) = event else {
+            Issue.record("Expected a tool request")
+            return
+        }
+
+        #expect(request.id == "call_1")
+        #expect(request.capability == "reminder.create")
+        #expect(try ReminderDraft.decode(arguments: request.arguments).title == "提交报销")
+    }
+
+    @Test @MainActor
+    func wellPhoneStreamDecoderRejectsUnsupportedProtocolVersion() {
+        let line = #"data: {"type":"response.completed","protocolVersion":"2.0","responseId":"resp_1"}"#
+
+        #expect(throws: WellPhoneProtocolError.self) {
+            try WellPhoneStreamDecoder.decode(line: line)
+        }
     }
 
     @Test @MainActor
@@ -120,6 +131,34 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func conversationLinksCapabilityRequestToInlineTaskCard() async throws {
+        let container = try makeContainer()
+        let taskController = TaskController(
+            modelContext: container.mainContext,
+            reminderExecutor: FakeReminderExecutor()
+        )
+        let controller = ConversationController(
+            modelContext: container.mainContext,
+            gateway: ToolRequestGateway(),
+            taskController: taskController
+        )
+        controller.draft = "明天上午九点提醒我带伞"
+
+        controller.sendDraft()
+        for _ in 0..<100 where controller.isGenerating {
+            await Task.yield()
+        }
+
+        let response = controller.messages.last
+        #expect(response?.role == .assistant)
+        guard let relatedTaskID = response?.relatedTaskID else {
+            Issue.record("Expected the assistant message to link an inline task")
+            return
+        }
+        #expect(taskController.task(id: relatedTaskID)?.status == .waitingForConfirmation)
+    }
+
+    @Test @MainActor
     func taskControllerGroupsTasksByStatus() throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -155,18 +194,19 @@ struct WellPhoneTests {
             runtime: .testing(reminderExecutor: executor),
             notifier: notifier
         )
-        let call = ModelToolCall(
+        let request = AgentToolRequest(
             id: "call_1",
-            name: "reminder_create",
+            capability: "reminder.create",
             arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
         )
 
         let task = try await controller.prepareTool(
-            from: call,
+            from: request,
             conversationID: UUID(),
             sourceMessageID: UUID()
         )
         #expect(task.status == .waitingForConfirmation)
+        #expect(task.toolCallID == "call_1")
         #expect(executor.createCount == 0)
         #expect(notifier.notifications.map(\.kind) == [.authorizationRequired])
         #expect(notifier.notifications.first?.taskID == task.id)
@@ -186,13 +226,12 @@ struct WellPhoneTests {
     func runtimeKeepsReminderAtomicWhileExposingInternalSteps() throws {
         let executor = FakeReminderExecutor()
         let runtime = AgentRuntime.testing(reminderExecutor: executor)
-        let request = try runtime.prepare(call: ModelToolCall(
+        let request = try runtime.prepare(request: AgentToolRequest(
             id: "call_1",
-            name: "reminder_create",
+            capability: "reminder.create",
             arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
         ))
 
-        #expect(request.descriptor.modelName == "reminder_create")
         #expect(request.descriptor.capability == "reminder.create")
         #expect(request.descriptor.confirmationPolicy == .always)
         #expect(request.descriptor.supportsRetry == false)
@@ -203,13 +242,13 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func runtimeRejectsUnregisteredModelTools() {
+    func runtimeRejectsUnregisteredCapabilities() {
         let runtime = AgentRuntime.testing(reminderExecutor: FakeReminderExecutor())
 
         #expect(throws: AgentRuntimeError.self) {
-            try runtime.prepare(call: ModelToolCall(
+            try runtime.prepare(request: AgentToolRequest(
                 id: "call_unsupported",
-                name: "calendar_delete",
+                capability: "calendar.delete",
                 arguments: "{}"
             ))
         }
@@ -224,9 +263,9 @@ struct WellPhoneTests {
             reminderExecutor: executor
         )
         let task = try await controller.prepareTool(
-            from: ModelToolCall(
+            from: AgentToolRequest(
                 id: "call_1",
-                name: "reminder_create",
+                capability: "reminder.create",
                 arguments: #"{"title":"提交报销","dueAt":"2099-09-11T15:00:00+08:00"}"#
             ),
             conversationID: UUID(),
@@ -276,5 +315,22 @@ private final class RecordingTaskNotifier: TaskNotifying {
 
     func post(_ notification: AgentTaskNotification) async {
         notifications.append(notification)
+    }
+}
+
+private struct ToolRequestGateway: ModelGateway {
+    func streamReply(
+        to messages: [ChatPromptMessage],
+        conversationID: UUID
+    ) -> AsyncThrowingStream<ModelGatewayEvent, any Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.toolRequest(AgentToolRequest(
+                id: "call_inline_card",
+                capability: "reminder.create",
+                arguments: #"{"title":"带伞","dueAt":"2099-09-11T09:00:00+08:00"}"#
+            )))
+            continuation.yield(.done)
+            continuation.finish()
+        }
     }
 }

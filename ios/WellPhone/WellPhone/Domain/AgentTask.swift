@@ -44,6 +44,7 @@ final class AgentTask {
     var conversationID: UUID
     var sourceMessageID: UUID?
     var title: String
+    var toolCallID: String?
     var capability: String?
     var createdAt: Date
     var updatedAt: Date
@@ -72,6 +73,7 @@ final class AgentTask {
         conversationID: UUID,
         sourceMessageID: UUID? = nil,
         title: String,
+        toolCallID: String? = nil,
         capability: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -89,6 +91,7 @@ final class AgentTask {
         self.conversationID = conversationID
         self.sourceMessageID = sourceMessageID
         self.title = title
+        self.toolCallID = toolCallID
         self.capability = capability
         self.createdAt = createdAt
         self.updatedAt = updatedAt

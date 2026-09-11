@@ -72,7 +72,7 @@ struct AppSidebar: View {
 
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
-                Text("Qwen")
+                Text("WellPhone AI")
             }
             .font(.caption)
             .foregroundStyle(.secondary)

@@ -99,16 +99,10 @@ struct ChatView: View {
                     }
 
                     ForEach(controller.messages) { message in
-                        if let taskID = message.relatedTaskID,
-                           let task = taskController.task(id: taskID) {
-                            ReminderTaskCard(task: task)
-                                .id(message.id)
-                        } else {
-                            MessageBubble(message: message) {
-                                controller.retryLastResponse()
-                            }
-                            .id(message.id)
+                        ChatMessageRow(message: message) {
+                            controller.retryLastResponse()
                         }
+                        .id(message.id)
                     }
 
                     if let errorMessage = controller.errorMessage {
@@ -171,9 +165,24 @@ struct ChatView: View {
     }
 }
 
+private struct ChatMessageRow: View {
+    @Environment(TaskController.self) private var taskController
+    @Bindable var message: ChatMessage
+    let retry: () -> Void
+
+    var body: some View {
+        if let taskID = message.relatedTaskID,
+           let task = taskController.task(id: taskID) {
+            ReminderTaskCard(task: task)
+        } else {
+            MessageBubble(message: message, retry: retry)
+        }
+    }
+}
+
 private struct ReminderTaskCard: View {
     @Environment(TaskController.self) private var controller
-    let task: AgentTask
+    @Bindable var task: AgentTask
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -274,7 +283,7 @@ private struct EmptyConversationView: View {
 }
 
 private struct MessageBubble: View {
-    let message: ChatMessage
+    @Bindable var message: ChatMessage
     let retry: () -> Void
 
     var body: some View {

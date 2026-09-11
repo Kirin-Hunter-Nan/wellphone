@@ -2,7 +2,7 @@
 
 一个面向 iPhone 的无界面多模态 Agent。用户通过文字、语音、图片或文件下达任务后，可以继续使用当前 App；Agent 在 iOS 允许的后台执行窗口内完成推理、文件处理、系统能力调用和服务 API 操作，全程不抢占屏幕、键盘或输入焦点。
 
-> 当前阶段：V0.1 最小 Agent 已接通。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Qwen 可生成 `reminder.create` 工具调用，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证，进度同步显示在聊天卡片与任务中心，并在任务等待确认或完成时发送本地通知。
+> 当前阶段：V0.1 最小 Agent 已接通。iPhone 12（iOS 26.6.2）的签名、安装、启动和 Xcode 调试已验证；Python AI 后端把 Qwen 工具调用转换为平台无关的 `reminder.create` capability，App 会校验参数、请求用户确认、写入系统提醒事项并回读验证，进度同步显示在聊天卡片与任务中心，并在任务等待确认或完成时发送本地通知。
 
 ## 核心原则
 
@@ -16,18 +16,18 @@
 
 ```mermaid
 flowchart LR
-    A["文字 / 语音 / 图片 / 文件"] --> B["Chat & App Intent"]
-    B --> C["Agent Runtime"]
-    C --> D["Model Gateway"]
-    D --> E["Plan Validator"]
-    E --> F["Tool Registry"]
-    C <--> G["Task Store / Checkpoint"]
-    C <--> H["Background Coordinator"]
-    F --> I["Vision / Photos / Files"]
-    F --> J["Calendar / Reminders"]
-    F --> K["Network & Service APIs"]
-    I --> L["Verified Result"]
-    J --> L
+    A["文字 / 语音 / 图片 / 文件"] --> B["Swift iOS Client"]
+    B --> C["Python AI Backend"]
+    C --> D["Provider Adapter"]
+    D --> E["Qwen / Future Model"]
+    C -->|"WellPhone SSE"| B
+    B --> F["Runtime Harness"]
+    F --> G["Capability Registry"]
+    F <--> H["Task Store / Checkpoint"]
+    F <--> I["Background Coordinator"]
+    G --> J["iOS System APIs"]
+    G --> K["Service APIs"]
+    J --> L["Verified Result"]
     K --> L
 ```
 
@@ -45,12 +45,12 @@ flowchart LR
 - iOS：Swift 6、SwiftUI、Swift Concurrency、SwiftData、App Intents、BackgroundTasks
 - 系统能力：PhotoKit、Vision、PDFKit/Core Graphics、EventKit、Keychain、OSLog
 - 网络：URLSession、Background URLSession、OAuth 2.0
-- 服务端：轻量 API 服务、模型网关、结构化输出校验、幂等记录
+- 服务端：Python 3.12+、FastAPI、Provider Adapter、结构化输出校验、幂等记录
 - 模型：支持多模态输入、JSON Schema/结构化输出与工具调用的模型
 
-## 启动 Qwen 模型代理
+## 启动 Python AI 后端
 
-需要 Node.js 20 或更高版本。先复制服务端环境变量示例：
+先复制服务端环境变量示例：
 
 ```bash
 cd server
@@ -65,17 +65,30 @@ QWEN_BASE_URL=
 QWEN_MODEL=
 ```
 
-`QWEN_BASE_URL` 必须与 API Key 所在地域一致，并以 `/compatible-mode/v1` 结尾。启动服务：
+`QWEN_BASE_URL` 必须与 API Key 所在地域一致，并以 `/compatible-mode/v1` 结尾。
+
+本地开发需要 Python 3.12 或更高版本以及 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-npm start
+uv sync
+uv run python -m app
 ```
+
+真机联调或本机常驻部署推荐使用 Docker：
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f ai-backend
+```
+
+停止服务时运行 `docker compose down`。Compose 会在运行时读取 `server/.env`，密钥不会复制进镜像；容器以非 root 用户和只读文件系统运行，并通过 `/health` 接受健康检查。
 
 iOS 客户端从 `ios/WellPhone/WellPhone/Config/AppConfig.json` 读取代理地址。真机联调时，将服务端 `HOST` 改为 `0.0.0.0`，并把 `modelProxyBaseURL` 改成运行代理的 Mac 局域网地址，例如 `http://192.168.1.20:8787`。该模式仅用于受信任的开发网络；正式部署应使用 HTTPS 和服务端认证。
 
 API Key 只存在于 `server/.env`，不会进入客户端或 Git。
 
-测试提醒链路时，可以发送“请提醒我明天上午九点带伞”。Qwen 返回的操作会先显示为确认卡片；点击“确认创建”后，App 才会请求提醒事项权限并执行。修改服务端代码后需要重新启动 `npm start`。
+测试提醒链路时，可以发送“请提醒我明天上午九点带伞”。后端返回的操作会先显示为确认卡片；点击“确认创建”后，App 才会请求提醒事项权限并执行。修改服务端代码后，本地开发模式需要重新启动 `uv run python -m app`；Docker 模式需要重新运行 `docker compose up -d --build`。
 
 首次产生需要确认的任务时，系统会请求通知权限。允许后，WellPhone 会在任务等待确认以及任务完成并通过验证时发送本地通知；点击通知会进入任务中心。拒绝通知权限不会阻止任务执行，任务状态仍会保存在 App 内。
 

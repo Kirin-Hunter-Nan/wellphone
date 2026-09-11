@@ -13,7 +13,6 @@ enum ToolConfirmationPolicy: String, Codable, Sendable {
 }
 
 struct AgentToolDescriptor: Equatable, Sendable {
-    let modelName: String
     let capability: String
     let riskLevel: ToolRiskLevel
     let confirmationPolicy: ToolConfirmationPolicy
@@ -43,9 +42,8 @@ struct VerifiedToolResult: Equatable, Sendable {
     let summary: String
 }
 
-/// A model-visible capability with deterministic preparation, execution, and verification.
-/// Internal operations stay hidden from the model so confirmation and verification cannot
-/// be skipped or invoked out of order.
+/// A device capability with deterministic preparation, execution, and verification.
+/// Provider-specific model tool names are normalized by the AI backend before this layer.
 @MainActor
 protocol AgentTool: AnyObject {
     var descriptor: AgentToolDescriptor { get }

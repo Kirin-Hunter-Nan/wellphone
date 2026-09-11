@@ -9,7 +9,7 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.1 最小 Agent 闭环已完成：Qwen 工具调用、参数校验、确认卡片、EventKit 写入、回读验证及任务进度已接通 |
+| 当前阶段 | V0.1 最小 Agent 闭环已完成：Python 后端协议适配、capability 请求、参数校验、确认卡片、EventKit 写入、回读验证及任务进度已接通 |
 | 首个真实工具 | `reminder.create` |
 | 首个完整业务任务 | 票据整理与报销报告 |
 
@@ -150,17 +150,29 @@ flowchart TB
         Mail["MailTool"]
     end
 
-    subgraph Backend["轻量后端"]
-        ModelProxy["Model Proxy"]
+    subgraph Backend["Python AI 后端"]
+        Protocol["WellPhone Protocol"]
+        Provider["Provider Adapter"]
+        Catalog["Tool Catalog"]
         OAuth["OAuth Exchange"]
         Idempotency["Idempotency Store"]
+    end
+
+    subgraph Models["模型供应商"]
+        Qwen["Qwen"]
+        Future["Future Provider"]
     end
 
     Chat --> Conversation --> Runtime
     Intent --> Runtime
     Share --> Runtime
     Picker --> Runtime
-    Runtime --> Planner --> ModelProxy
+    Runtime --> Planner --> Protocol
+    Protocol --> Provider
+    Provider --> Qwen
+    Provider --> Future
+    Catalog --> Provider
+    Protocol -->|"assistant.delta / tool.requested"| Planner
     Runtime --> Validator --> Registry
     Runtime <--> Store
     Runtime <--> Consent
@@ -184,7 +196,7 @@ flowchart TB
 - View 只能处理展示和用户交互，不直接调用模型或系统工具。
 - `ConversationController` 管理消息，不负责长任务执行。
 - `AgentRuntime` 是任务的唯一调度入口。
-- `ModelGateway` 只产生文本或结构化计划，不直接产生副作用。
+- `ModelGateway` 只接收 WellPhone 协议中的文本或 capability 请求，不解析模型厂商协议，也不直接产生副作用。
 - `PlanValidator` 必须在所有工具执行前运行。
 - `ToolRegistry` 只暴露显式注册的工具。
 - `TaskStore` 是任务状态的唯一事实来源。
@@ -210,11 +222,16 @@ wellphone/
 │   ├── ModelGateway/
 │   └── BackgroundRuntime/
 ├── shared/
-│   ├── schemas/
-│   └── capabilities/
+│   └── schemas/
+│       ├── protocol/
+│       └── capabilities/
 ├── server/
-│   ├── app/
+│   ├── app/providers/
+│   ├── app/tools/
 │   ├── tests/
+│   ├── Dockerfile
+│   ├── compose.yaml
+│   ├── pyproject.toml
 │   └── .env.example
 ├── docs/
 │   └── DEVELOPMENT.md
@@ -479,7 +496,7 @@ struct AuthorizationGrant: Codable, Sendable {
 POST /v1/conversations/{id}/messages
 ```
 
-请求包含文本、历史摘要和附件引用；前台聊天可以使用流式响应，后台任务应优先使用普通请求或可恢复的服务端 Job，避免依赖长连接。
+请求包含 `protocolVersion`、`requestId`、设备 locale/time zone、文本、历史摘要和附件引用。前台聊天通过 WellPhone SSE 事件接收 `assistant.delta`、`tool.requested` 和完成状态；模型厂商的流式格式必须在 Python Provider Adapter 内终止。后台任务应优先使用普通请求或可恢复的服务端 Job，避免依赖长连接。
 
 ### 12.2 计划
 

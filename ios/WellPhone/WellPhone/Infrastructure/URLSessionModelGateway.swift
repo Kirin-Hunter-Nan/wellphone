@@ -11,7 +11,6 @@ struct URLSessionModelGateway: ModelGateway {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var toolCalls: [Int: ToolCallAccumulator] = [:]
                     let request = try makeRequest(
                         messages: messages,
                         conversationID: conversationID
@@ -24,35 +23,32 @@ struct URLSessionModelGateway: ModelGateway {
                     guard (200..<300).contains(httpResponse.statusCode) else {
                         throw await serverError(from: bytes, statusCode: httpResponse.statusCode)
                     }
+                    guard httpResponse.value(forHTTPHeaderField: "Content-Type")?
+                        .lowercased()
+                        .contains("text/event-stream") == true else {
+                        throw ModelGatewayError.invalidResponse
+                    }
 
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
-                        switch try QwenStreamDecoder.decode(line: line) {
+                        switch try WellPhoneStreamDecoder.decode(line: line) {
+                        case .responseStarted:
+                            continue
                         case .textDelta(let text):
                             continuation.yield(.textDelta(text))
-                        case .toolCallDelta(let index, let id, let name, let arguments):
-                            var accumulator = toolCalls[index] ?? ToolCallAccumulator()
-                            if let id, !id.isEmpty { accumulator.id = id }
-                            if let name, !name.isEmpty { accumulator.name = name }
-                            if let arguments { accumulator.arguments += arguments }
-                            toolCalls[index] = accumulator
-                        case .done:
-                            for index in toolCalls.keys.sorted() {
-                                guard let call = toolCalls[index], !call.name.isEmpty else { continue }
-                                continuation.yield(.toolCall(ModelToolCall(
-                                    id: call.id,
-                                    name: call.name,
-                                    arguments: call.arguments
-                                )))
-                            }
+                        case .toolRequested(let request):
+                            continuation.yield(.toolRequest(request))
+                        case .completed:
                             continuation.yield(.done)
                             continuation.finish()
                             return
+                        case .failed(let message):
+                            throw ModelGatewayError.server(statusCode: 200, message: message)
                         case .ignored:
                             continue
                         }
                     }
-                    continuation.finish()
+                    throw ModelGatewayError.invalidResponse
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -79,7 +75,16 @@ struct URLSessionModelGateway: ModelGateway {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONEncoder().encode(ChatRequest(messages: messages))
+        request.httpBody = try JSONEncoder().encode(ChatRequest(
+            requestID: UUID().uuidString.lowercased(),
+            protocolVersion: WellPhoneStreamDecoder.protocolVersion,
+            messages: messages,
+            deviceContext: DeviceContext(
+                locale: Locale.current.identifier,
+                timeZone: TimeZone.current.identifier,
+                capabilitySetVersion: "ios-v1"
+            )
+        ))
         return request
     }
 
@@ -101,14 +106,24 @@ struct URLSessionModelGateway: ModelGateway {
     }
 }
 
-private struct ToolCallAccumulator {
-    var id = ""
-    var name = ""
-    var arguments = ""
+private struct ChatRequest: Encodable {
+    let requestID: String
+    let protocolVersion: String
+    let messages: [ChatPromptMessage]
+    let deviceContext: DeviceContext
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "requestId"
+        case protocolVersion
+        case messages
+        case deviceContext
+    }
 }
 
-private struct ChatRequest: Encodable {
-    let messages: [ChatPromptMessage]
+private struct DeviceContext: Encodable {
+    let locale: String
+    let timeZone: String
+    let capabilitySetVersion: String
 }
 
 private struct ServerErrorEnvelope: Decodable {
@@ -126,7 +141,7 @@ enum ModelGatewayError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            "模型代理返回了无效响应。"
+            "AI 服务返回了无效响应。"
         case .server(_, let message):
             message
         }

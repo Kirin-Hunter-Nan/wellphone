@@ -5,15 +5,15 @@ struct ChatPromptMessage: Codable, Equatable, Sendable {
     let content: String
 }
 
-struct ModelToolCall: Equatable, Sendable {
+struct AgentToolRequest: Equatable, Sendable {
     let id: String
-    let name: String
+    let capability: String
     let arguments: String
 }
 
 enum ModelGatewayEvent: Equatable, Sendable {
     case textDelta(String)
-    case toolCall(ModelToolCall)
+    case toolRequest(AgentToolRequest)
     case done
 }
 
@@ -24,9 +24,8 @@ protocol ModelGateway: Sendable {
     ) -> AsyncThrowingStream<ModelGatewayEvent, any Error>
 }
 
-/// A deterministic local gateway used while the server-side model proxy is being built.
-/// It exercises the same streaming, cancellation, retry, and persistence paths as the
-/// production gateway without putting a model key in the app.
+/// A deterministic local gateway that exercises the same client-side streaming,
+/// cancellation, retry, and persistence paths without contacting the AI backend.
 struct DemoModelGateway: ModelGateway {
     func streamReply(
         to messages: [ChatPromptMessage],

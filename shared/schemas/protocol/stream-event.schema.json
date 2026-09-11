@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/protocol/stream-event.schema.json",
+  "title": "WellPhone StreamEvent",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "response.started" },
+        "protocolVersion": { "const": "1.0" },
+        "responseId": { "type": "string" }
+      },
+      "required": ["type", "protocolVersion", "responseId"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "assistant.delta" },
+        "protocolVersion": { "const": "1.0" },
+        "responseId": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["type", "protocolVersion", "responseId", "text"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "tool.requested" },
+        "protocolVersion": { "const": "1.0" },
+        "responseId": { "type": "string" },
+        "toolCallId": { "type": "string" },
+        "capability": { "type": "string" },
+        "arguments": { "type": "object" }
+      },
+      "required": ["type", "protocolVersion", "responseId", "toolCallId", "capability", "arguments"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "response.completed" },
+        "protocolVersion": { "const": "1.0" },
+        "responseId": { "type": "string" }
+      },
+      "required": ["type", "protocolVersion", "responseId"]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "response.failed" },
+        "protocolVersion": { "const": "1.0" },
+        "responseId": { "type": "string" },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": { "type": "string" },
+            "message": { "type": "string" }
+          },
+          "required": ["code", "message"]
+        }
+      },
+      "required": ["type", "protocolVersion", "responseId", "error"]
+    }
+  ]
+}

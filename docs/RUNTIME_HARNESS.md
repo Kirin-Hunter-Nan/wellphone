@@ -4,12 +4,24 @@
 
 模型只请求业务能力，不直接调用能力内部的原子操作。一个模型可见 Tool 可以由多个确定性步骤组成；确认、执行与验证的顺序由 Runtime Harness 保证。
 
-`reminder_create` 是模型协议中的单一 Tool，对应平台无关 capability `reminder.create`。参数解析、用户确认、EventKit 写入和回读验证不是独立的模型 Tool。
+`reminder_create` 只存在于 Qwen Provider 内部，并在 Python 服务端被转换为平台无关 capability `reminder.create`。Swift 客户端不识别任何模型厂商的 Tool 名称。参数解析、用户确认、EventKit 写入和回读验证不是独立的模型 Tool。
+
+## 客户端与服务端边界
+
+```text
+Qwen / future provider
+  -> Python Provider Adapter
+  -> WellPhone SSE protocol (tool.requested + capability)
+  -> Swift Runtime Harness
+  -> iOS system capability
+```
+
+Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式响应解析，以及厂商 Tool 名称到 capability 的映射。Swift 客户端负责权限、用户确认、本地任务状态、系统 API 调用与结果验证。模型供应商变化不应要求修改 Runtime Harness。
 
 ## 执行链
 
 ```text
-ModelToolCall
+AgentToolRequest
   -> ToolRegistry
   -> AgentTool.prepare
   -> confirmation gate
@@ -33,7 +45,7 @@ ModelToolCall
 ```text
 AgentRuntime/
   AgentTool.swift       通用 Tool 契约与元数据
-  ToolRegistry.swift    模型名称和 capability 白名单
+  ToolRegistry.swift    设备 capability 白名单
   AgentRuntime.swift    prepare / execute / verify 调度入口
 
 AgentTools/
@@ -50,9 +62,10 @@ AgentTools/
 新增能力时：
 
 1. 在 `AgentTools/<Capability>/` 中实现 `AgentTool`。
-2. 声明稳定的 model name、capability、风险等级和确认策略。
+2. 在客户端声明稳定的 capability、风险等级和确认策略。
 3. 将内部系统操作封装在 executor 中，将结果核验封装在 verifier 中。
-4. 只在 `ToolRegistry` 注册模型允许调用的 Tool。
-5. 使用 Fake executor 测试未确认不执行、执行后必验证、验证失败不完成。
+4. 只在 `ToolRegistry` 注册设备允许调用的 capability。
+5. 在 Python Provider Adapter 中声明厂商 Tool Schema，并映射到相同 capability。
+6. 使用 Fake executor 测试未确认不执行、执行后必验证、验证失败不完成。
 
 除非某个步骤本身对用户有独立业务意义并且可以安全、幂等地单独执行，否则不要把内部步骤拆成新的模型 Tool。

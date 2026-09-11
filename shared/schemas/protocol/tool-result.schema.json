@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/protocol/tool-result.schema.json",
+  "title": "WellPhone ToolResult",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "toolCallId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "format": "uuid" },
+    "capability": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["verified", "declined", "failed"]
+    },
+    "result": { "type": "object" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "required": ["code", "message"]
+    }
+  },
+  "required": ["toolCallId", "taskId", "capability", "status"]
+}

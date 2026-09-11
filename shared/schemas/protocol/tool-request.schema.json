@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/protocol/tool-request.schema.json",
+  "title": "WellPhone ToolRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "toolCallId": { "type": "string", "minLength": 1 },
+    "capability": { "type": "string", "minLength": 1 },
+    "arguments": { "type": "object" }
+  },
+  "required": ["toolCallId", "capability", "arguments"]
+}

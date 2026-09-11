@@ -36,13 +36,13 @@ final class AgentRuntime {
         )
     }
 
-    func prepare(call: ModelToolCall) throws -> PreparedToolRequest {
-        guard let tool = registry.tool(modelName: call.name) else {
-            throw AgentRuntimeError.unsupportedModelTool(call.name)
+    func prepare(request: AgentToolRequest) throws -> PreparedToolRequest {
+        guard let tool = registry.tool(capability: request.capability) else {
+            throw AgentRuntimeError.unsupportedCapability(request.capability)
         }
         return PreparedToolRequest(
             descriptor: tool.descriptor,
-            task: try tool.prepare(argumentsJSON: call.arguments)
+            task: try tool.prepare(argumentsJSON: request.arguments)
         )
     }
 
@@ -79,15 +79,12 @@ final class AgentRuntime {
 }
 
 enum AgentRuntimeError: LocalizedError {
-    case unsupportedModelTool(String)
     case unsupportedCapability(String)
     case missingCapability
     case missingArguments
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedModelTool(let name):
-            "模型请求了尚未支持的工具：\(name)"
         case .unsupportedCapability(let capability):
             "任务使用了尚未注册的能力：\(capability)"
         case .missingCapability:

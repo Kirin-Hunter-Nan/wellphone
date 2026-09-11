@@ -115,10 +115,10 @@ final class ConversationController {
                     switch event {
                     case .textDelta(let text):
                         response.text += text
-                    case .toolCall(let call):
+                    case .toolRequest(let request):
                         guard response.relatedTaskID == nil else { continue }
                         let task = try await self?.taskController.prepareTool(
-                            from: call,
+                            from: request,
                             conversationID: activeConversation.id,
                             sourceMessageID: sourceMessageID
                         )

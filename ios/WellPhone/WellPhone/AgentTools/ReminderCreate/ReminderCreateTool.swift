@@ -3,7 +3,6 @@ import Foundation
 @MainActor
 final class ReminderCreateTool: AgentTool {
     let descriptor = AgentToolDescriptor(
-        modelName: "reminder_create",
         capability: "reminder.create",
         riskLevel: .write,
         confirmationPolicy: .always,

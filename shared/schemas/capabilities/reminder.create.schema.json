@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wellphone.local/schemas/capabilities/reminder.create.schema.json",
+  "title": "reminder.create arguments",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "dueAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "listName": {
+      "type": "string"
+    }
+  },
+  "required": ["title", "dueAt"]
+}
