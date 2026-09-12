@@ -5,6 +5,13 @@ import os
 import socket
 
 from app.config import load_settings
+from app.agent_loop import (
+    AgentLoopEngine,
+    AgentLoopTaskHandler,
+    AgentLoopToolRegistry,
+    PostgreSQLAgentLoopJournal,
+    QwenAgentLoopModel,
+)
 from app.jobs import (
     ArtifactDraft,
     PostgreSQLServerTaskStore,
@@ -12,7 +19,12 @@ from app.jobs import (
     ServerTaskRunner,
     TaskOutcome,
 )
-from app.travel import TravelPlanHandler
+from app.travel import (
+    AppleMapsSearchClient,
+    ItinerarySubmitTool,
+    PlacesSearchTool,
+    make_travel_profile,
+)
 
 
 class HarnessProbeHandler:
@@ -41,11 +53,22 @@ class HarnessProbeHandler:
 async def run_worker() -> None:
     settings = load_settings()
     store = PostgreSQLServerTaskStore(settings.database_url)
-    travel_handler = TravelPlanHandler(settings)
+    journal = PostgreSQLAgentLoopJournal(settings.database_url)
+    model = QwenAgentLoopModel(settings)
+    maps = AppleMapsSearchClient(settings.apple_maps_token)
+    tools = AgentLoopToolRegistry([
+        PlacesSearchTool(maps),
+        ItinerarySubmitTool(),
+    ])
+    loop_handler = AgentLoopTaskHandler(
+        AgentLoopEngine(model, tools, journal),
+        [make_travel_profile()],
+    )
     await store.initialize()
+    await journal.initialize()
     runner = ServerTaskRunner(
         store,
-        [HarnessProbeHandler(), travel_handler],
+        [HarnessProbeHandler(), loop_handler],
         worker_id=f"{socket.gethostname()}:{os.getpid()}",
         lease_seconds=settings.task_worker_lease_seconds,
         max_attempts=settings.task_worker_max_attempts,
@@ -56,7 +79,9 @@ async def run_worker() -> None:
             if not handled:
                 await asyncio.sleep(settings.task_worker_poll_seconds)
     finally:
-        await travel_handler.close()
+        await maps.close()
+        await model.close()
+        await journal.close()
         await store.close()
 
 

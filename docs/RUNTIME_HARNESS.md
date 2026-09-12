@@ -2,9 +2,24 @@
 
 ## 边界
 
-模型只请求业务能力，不直接调用能力内部的原子操作。一个模型可见 Tool 可以由多个确定性步骤组成；确认、执行与验证的顺序由 Runtime Harness 保证。
+聊天模型只请求业务能力；短任务由客户端 Runtime Harness 执行，长任务则由服务端统一 Agent Loop 在确认后自主调用白名单原子 Tool。两条链路都由确定性边界负责确认、参数校验、真实执行和结果验证。
 
 `reminder_create` 只存在于 Qwen Provider 内部，并在 Python 服务端被转换为平台无关 capability `reminder.create`。Swift 客户端不识别任何模型厂商的 Tool 名称。参数解析、用户确认、EventKit 写入和回读验证不是独立的模型 Tool。
+
+`travel_plan` 同样只是聊天阶段的意图入口，并映射为 `travel.plan` 长任务。旅行规划本身没有专属 Loop：worker 注册唯一的通用 `AgentLoopTaskHandler`，由 `travel.plan` Profile 提供系统提示词、允许使用的 Tool、循环预算、进度步骤和最终结果构建器。目前的原子 Tool 是 `places_search` 与 `itinerary_submit`；后续能力通过新增或复用 Tool、再增加轻量 Profile 接入，不需要复制一套业务循环。
+
+服务端每轮模型决策、Tool Observation、状态更新与最终输出都写入 PostgreSQL `agent_loop_events`。worker 租约过期或进程重启后，会恢复消息与工具状态；若中断发生在模型 Tool Call 已落库而结果尚未落库之间，恢复流程会继续执行该待处理调用，而不是重新开始整项规划。
+
+```text
+Chat intent Tool -> capability -> user confirmation -> server task queue
+  -> Generic Agent Loop
+       -> Task Profile (prompt / allowed tools / budgets / finalizer)
+       -> Model decision
+       -> Atomic Tool
+       -> validated Observation
+       -> next decision or terminal result
+  -> deterministic artifacts -> task detail + chat completion reply
+```
 
 ## 客户端与服务端边界
 

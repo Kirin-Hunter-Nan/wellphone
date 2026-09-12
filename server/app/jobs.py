@@ -491,7 +491,6 @@ ProgressReporter = Callable[[str, float, str, Sequence[str], int], Awaitable[Non
 
 
 class ServerTaskHandler(Protocol):
-    capability: str
     async def run(self, task: ServerTask, report: ProgressReporter) -> TaskOutcome: ...
 
 
@@ -501,7 +500,16 @@ class ServerTaskRunner:
         worker_id: str, lease_seconds: int = 300, max_attempts: int = 3,
     ) -> None:
         self._store = store
-        self._handlers = {handler.capability: handler for handler in handlers}
+        self._handlers: dict[str, ServerTaskHandler] = {}
+        for handler in handlers:
+            capabilities = getattr(handler, "capabilities", None)
+            if capabilities is None:
+                capability = getattr(handler, "capability", None)
+                capabilities = (capability,) if isinstance(capability, str) else ()
+            for capability in capabilities:
+                if capability in self._handlers:
+                    raise ValueError(f"Duplicate server task capability: {capability}")
+                self._handlers[capability] = handler
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts

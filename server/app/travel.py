@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-import json
 from typing import Literal
 from urllib.parse import urlencode
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.config import Settings
+from app.agent_loop import AgentTaskProfile, LoopToolContext, LoopToolResult
 from app.jobs import ArtifactDraft, ServerTask, TaskOutcome
 
 
 class TravelPlanInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
-
     destination: str = Field(min_length=1, max_length=200)
     start_date: date = Field(alias="startDate")
     end_date: date = Field(alias="endDate")
@@ -54,8 +52,12 @@ class AppleMapsSearchClient:
         self._client = client or httpx.AsyncClient(timeout=20)
         self._owns_client = client is None
 
-    async def search(self, query: str, destination: str, language: str = "zh-CN") -> AppleMapsPlace:
-        fallback_url = "https://maps.apple.com/?" + urlencode({"q": f"{query} {destination}"})
+    async def search(
+        self, query: str, destination: str, language: str = "zh-CN"
+    ) -> AppleMapsPlace:
+        fallback_url = "https://maps.apple.com/?" + urlencode(
+            {"q": f"{query} {destination}"}
+        )
         if not self._token:
             return AppleMapsPlace(name=query, map_url=fallback_url, verified=False)
         response = await self._client.get(
@@ -90,115 +92,228 @@ class AppleMapsSearchClient:
             await self._client.aclose()
 
 
-class TravelPlanHandler:
-    capability = "travel.plan"
+class PlacesSearchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(min_length=1, max_length=200)
+    destination: str = Field(min_length=1, max_length=200)
+    language: str = Field(default="zh-CN", min_length=2, max_length=20)
 
-    def __init__(
-        self, settings: Settings, *, client: httpx.AsyncClient | None = None,
-        maps: AppleMapsSearchClient | None = None,
-    ) -> None:
-        self._settings = settings
-        self._client = client or httpx.AsyncClient(timeout=120)
-        self._owns_client = client is None
-        self._maps = maps or AppleMapsSearchClient(settings.apple_maps_token)
 
-    async def run(self, task: ServerTask, report) -> TaskOutcome:
-        travel = TravelPlanInput.model_validate(task.input)
-        steps = ("理解旅行需求", "生成候选行程", "核对地点", "整理行程与日历")
-        await report("understanding", 0.08, "正在整理日期、节奏和偏好", steps, 0)
-        plan = await self._generate_plan(travel)
-        await report("planning", 0.42, "候选行程已经生成", steps, 1)
+class PlacesSearchTool:
+    name = "places_search"
+    description = (
+        "Search Apple Maps for one concrete attraction, restaurant, cafe, hotel, or other "
+        "place. Call it for every place before submitting an itinerary."
+    )
+    arguments_model = PlacesSearchArguments
 
-        items = [item for day in plan.get("days", []) for item in day.get("items", [])]
-        for index, item in enumerate(items):
-            name = str(item.get("name", "")).strip()
-            if not name:
-                continue
-            place = await self._maps.search(name, travel.destination)
-            item["place"] = place.model_dump(mode="json", by_alias=True)
-            progress = 0.45 + (0.35 * (index + 1) / max(len(items), 1))
-            await report("researching", progress, f"正在核对地点：{name}", steps, 2)
+    def __init__(self, maps: AppleMapsSearchClient) -> None:
+        self._maps = maps
 
-        await report("composing", 0.88, "正在生成文本和日历结构", steps, 3)
-        markdown = _render_markdown(plan, travel)
-        calendar = _calendar_payload(plan, travel)
-        title = str(plan.get("title") or f"{travel.destination}旅行计划")
-        return TaskOutcome(
-            summary=f"{title}已完成，共规划 {len(plan.get('days', []))} 天。",
-            artifacts=(
-                ArtifactDraft(
-                    kind="itinerary", title=title,
-                    content_type="application/vnd.wellphone.itinerary+json", payload=plan,
-                ),
-                ArtifactDraft(
-                    kind="text", title=f"{title}（文本版）",
-                    content_type="text/markdown", payload=markdown,
-                ),
-                ArtifactDraft(
-                    kind="json", title=f"{title}（日历事件）",
-                    content_type="application/vnd.wellphone.calendar-events+json", payload=calendar,
-                ),
+    async def execute(
+        self, arguments: BaseModel, context: LoopToolContext
+    ) -> LoopToolResult:
+        values = PlacesSearchArguments.model_validate(arguments)
+        requested = TravelPlanInput.model_validate(context.task.input)
+        requested_destination = requested.destination.casefold()
+        supplied_destination = values.destination.casefold()
+        if (
+            requested_destination not in supplied_destination
+            and supplied_destination not in requested_destination
+        ):
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "destination_mismatch",
+                    "message": f"Search destination must remain {requested.destination}",
+                },
+            })
+        place = await self._maps.search(
+            values.query, requested.destination, values.language
+        )
+        dumped = place.model_dump(mode="json")
+        return LoopToolResult(
+            observation={"ok": True, "place": dumped},
+            state_updates={"places": {values.query.casefold(): dumped}},
+        )
+
+
+class TravelPlanItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    name: str = Field(min_length=1, max_length=200)
+    duration_minutes: int = Field(alias="durationMinutes", ge=15, le=720)
+    notes: str | None = Field(default=None, max_length=2_000)
+    place: dict[str, object] | None = None
+
+
+class TravelPlanDay(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    date: date
+    theme: str = Field(min_length=1, max_length=200)
+    items: list[TravelPlanItem] = Field(min_length=1, max_length=8)
+
+
+class TravelPlanOutput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    title: str = Field(min_length=1, max_length=300)
+    overview: str = Field(min_length=1, max_length=4_000)
+    time_zone: str = Field(alias="timeZone", min_length=1, max_length=100)
+    days: list[TravelPlanDay] = Field(min_length=1, max_length=14)
+
+
+class ItinerarySubmitArguments(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    plan: TravelPlanOutput
+
+
+class ItinerarySubmitTool:
+    name = "itinerary_submit"
+    description = (
+        "Validate and submit the final itinerary. If validation returns issues, revise only "
+        "the affected parts, search any missing places, and submit again."
+    )
+    arguments_model = ItinerarySubmitArguments
+
+    async def execute(
+        self, arguments: BaseModel, context: LoopToolContext
+    ) -> LoopToolResult:
+        values = ItinerarySubmitArguments.model_validate(arguments)
+        requested = TravelPlanInput.model_validate(context.task.input)
+        issues = _validate_plan(values.plan, requested, context.state)
+        if issues:
+            return LoopToolResult({
+                "ok": False,
+                "status": "needs_revision",
+                "issues": issues,
+            })
+        enriched = _enrich_plan(values.plan, context.state)
+        return LoopToolResult(
+            observation={"ok": True, "status": "accepted"},
+            final_output=enriched,
+        )
+
+
+def make_travel_profile() -> AgentTaskProfile:
+    return AgentTaskProfile(
+        capability="travel.plan",
+        allowed_tools=("places_search", "itinerary_submit"),
+        steps=("理解旅行目标", "自主检索与规划", "校验并修订", "生成最终行程"),
+        max_iterations=32,
+        max_tool_calls=112,
+        system_prompt=(
+            "你是 WellPhone 的旅行规划 Agent，运行在一个有预算上限的工具循环中。"
+            "理解用户日期、目的地、同行者、节奏和偏好后，自主决定搜索哪些地点。"
+            "每一个进入行程的具体地点都必须先调用 places_search 核对。"
+            "互不依赖的地点应在同一轮并行发起多个 places_search，避免无意义的逐个等待。"
+            "不要虚构营业时间、票价或地图核对结果。按地理邻近性组织每天的安排，"
+            "为移动和休息保留合理时间。完成后必须调用 itinerary_submit；如果它返回"
+            "校验问题，依据 Observation 局部修订并再次提交。不要直接用普通文本结束任务。"
+        ),
+        finalize=build_travel_outcome,
+        parse_final_content=lambda _: None,
+    )
+
+
+def build_travel_outcome(
+    task: ServerTask, output: dict[str, object]
+) -> TaskOutcome:
+    travel = TravelPlanInput.model_validate(task.input)
+    plan = TravelPlanOutput.model_validate(output).model_dump(mode="json", by_alias=True)
+    markdown = _render_markdown(plan, travel)
+    calendar = _calendar_payload(plan, travel)
+    title = str(plan["title"])
+    return TaskOutcome(
+        summary=f"{title}已完成，共规划 {len(plan['days'])} 天。",
+        artifacts=(
+            ArtifactDraft(
+                kind="itinerary", title=title,
+                content_type="application/vnd.wellphone.itinerary+json", payload=plan,
             ),
+            ArtifactDraft(
+                kind="text", title=f"{title}（文本版）",
+                content_type="text/markdown", payload=markdown,
+            ),
+            ArtifactDraft(
+                kind="json", title=f"{title}（日历事件）",
+                content_type="application/vnd.wellphone.calendar-events+json", payload=calendar,
+            ),
+        ),
+    )
+
+
+def _validate_plan(
+    plan: TravelPlanOutput,
+    requested: TravelPlanInput,
+    state: dict[str, object],
+) -> list[str]:
+    issues: list[str] = []
+    expected_dates: list[date] = []
+    current = requested.start_date
+    while current <= requested.end_date:
+        expected_dates.append(current)
+        current += timedelta(days=1)
+    if [day.date for day in plan.days] != expected_dates:
+        issues.append(
+            "days must cover every requested date exactly once and in chronological order"
         )
-
-    async def _generate_plan(self, travel: TravelPlanInput) -> dict[str, object]:
-        endpoint = httpx.URL(self._settings.base_url).join("chat/completions")
-        response = await self._client.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {self._settings.api_key}"},
-            json={
-                "model": self._settings.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是旅行规划器。只输出一个 JSON 对象，不要 Markdown。"
-                            "结构必须是 {title,overview,days:[{date,theme,items:["
-                            "{time,name,durationMinutes,notes}]}],timeZone}。timeZone 必须是目的地的 "
-                            "IANA 时区。地点名称必须真实、具体；"
-                            "同一天的地点应尽量相邻，时间必须为 HH:mm。不要虚构营业时间或票价。"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(travel.model_dump(mode="json", by_alias=True), ensure_ascii=False),
-                    },
-                ],
-                "response_format": {"type": "json_object"},
-                "stream": False,
-            },
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        plan = _decode_json_object(content)
-        if not isinstance(plan.get("days"), list):
-            raise ValueError("模型没有返回有效的旅行日程")
-        return plan
-
-    async def close(self) -> None:
-        await self._maps.close()
-        if self._owns_client:
-            await self._client.aclose()
+    daily_limit = {"relaxed": 3, "balanced": 5, "intensive": 7}[requested.pace]
+    places = state.get("places") if isinstance(state.get("places"), dict) else {}
+    for day in plan.days:
+        if len(day.items) > daily_limit:
+            issues.append(
+                f"{day.date.isoformat()} has {len(day.items)} places; "
+                f"{requested.pace} pace allows {daily_limit}"
+            )
+        previous_end = -1
+        for item in day.items:
+            hour, minute = (int(value) for value in item.time.split(":"))
+            start = hour * 60 + minute
+            if start < previous_end:
+                issues.append(
+                    f"{day.date.isoformat()} has overlapping items near {item.name}"
+                )
+            previous_end = start + item.duration_minutes
+            if _matching_place(item.name, places) is None:
+                issues.append(f"call places_search for {item.name} before submitting")
+    return issues
 
 
-def _decode_json_object(content: str) -> dict[str, object]:
-    value = content.strip()
-    if value.startswith("```"):
-        value = value.removeprefix("```json").removeprefix("```")
-        value = value.removesuffix("```").strip()
-    parsed = json.loads(value)
-    if not isinstance(parsed, dict):
-        raise ValueError("Expected a JSON object from the travel planner")
-    return parsed
+def _enrich_plan(
+    plan: TravelPlanOutput, state: dict[str, object]
+) -> dict[str, object]:
+    places = state.get("places") if isinstance(state.get("places"), dict) else {}
+    for day in plan.days:
+        for item in day.items:
+            item.place = _matching_place(item.name, places)
+    return plan.model_dump(mode="json", by_alias=True)
+
+
+def _matching_place(
+    name: str, places: dict[str, object]
+) -> dict[str, object] | None:
+    normalized = name.casefold()
+    for query, place in places.items():
+        if (normalized in query or query in normalized) and isinstance(place, dict):
+            return place
+    return None
 
 
 def _render_markdown(plan: dict[str, object], travel: TravelPlanInput) -> str:
-    lines = [f"# {plan.get('title') or travel.destination + '旅行计划'}", "", str(plan.get("overview") or ""), ""]
+    lines = [
+        f"# {plan.get('title') or travel.destination + '旅行计划'}",
+        "",
+        str(plan.get("overview") or ""),
+        "",
+    ]
     for day in plan.get("days", []):
         lines.extend([f"## {day.get('date', '')} · {day.get('theme', '')}", ""])
         for item in day.get("items", []):
             place = item.get("place") or {}
-            lines.append(f"- **{item.get('time', '')} {item.get('name', '')}**（约 {item.get('durationMinutes', '')} 分钟）")
+            lines.append(
+                f"- **{item.get('time', '')} {item.get('name', '')}**"
+                f"（约 {item.get('durationMinutes', '')} 分钟）"
+            )
             if item.get("notes"):
                 lines.append(f"  {item['notes']}")
             if place.get("map_url"):
@@ -207,7 +322,9 @@ def _render_markdown(plan: dict[str, object], travel: TravelPlanInput) -> str:
     return "\n".join(lines).strip()
 
 
-def _calendar_payload(plan: dict[str, object], travel: TravelPlanInput) -> dict[str, object]:
+def _calendar_payload(
+    plan: dict[str, object], travel: TravelPlanInput
+) -> dict[str, object]:
     events: list[dict[str, object]] = []
     for day in plan.get("days", []):
         day_value = str(day.get("date") or "")
