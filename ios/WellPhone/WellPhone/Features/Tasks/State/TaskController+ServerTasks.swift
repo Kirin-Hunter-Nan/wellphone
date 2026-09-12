@@ -54,6 +54,7 @@ extension TaskController {
         do {
             apply(try await serverTaskClient.confirm(taskID: task.id), to: task)
             try modelContext.save()
+            beginContinuedProcessing(for: task)
             startPollingServerTask(task)
         } catch {
             task.errorMessage = error.localizedDescription
@@ -69,6 +70,7 @@ extension TaskController {
             serverPollingTasks[task.id]?.cancel()
             serverPollingTasks[task.id] = nil
             await queueAndReportResult(for: task)
+            backgroundCoordinator.cancel(taskID: task.id)
         } catch {
             task.errorMessage = error.localizedDescription
             touchAndSave(task)
@@ -113,6 +115,10 @@ extension TaskController {
                             ))
                         }
                         await self.queueAndReportResult(for: localTask)
+                        self.backgroundCoordinator.finish(
+                            taskID: localTask.id,
+                            success: localTask.status == .completed
+                        )
                         return
                     }
                 } catch {
@@ -136,6 +142,12 @@ extension TaskController {
         task.errorMessage = snapshot.errorMessage
         task.executionAttemptCount = snapshot.attemptCount
         task.updatedAt = snapshot.updatedAt
+        backgroundCoordinator.update(
+            taskID: task.id,
+            progress: task.progress,
+            title: task.title,
+            subtitle: task.detail
+        )
 
         steps(for: task).forEach(modelContext.delete)
         snapshot.steps.forEach { item in

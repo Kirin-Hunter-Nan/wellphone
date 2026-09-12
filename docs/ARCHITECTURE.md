@@ -14,7 +14,7 @@
 - `Agent/Tools/`：可以在设备上确定性执行的原子工具。
 - `Features/Chat/`：聊天状态与视图；页面容器只协调导航和侧边栏，输入器、消息气泡、任务卡片与完成提示位于独立组件；图片处理、附件文件存储、SwiftData 附件关联、流式生成和会话持久化拥有独立边界。
 - `Features/Tasks/`：任务中心状态与视图；列表容器、任务卡片、详情页、进度、产物和展示规则分别维护。
-- `Platform/`：EventKit、通知等 Apple 平台适配器。
+- `Platform/`：EventKit、通知与 `BGContinuedProcessingTask` 后台协调器等 Apple 平台适配器。
 - `Resources/`：资产目录和非敏感运行配置。
 
 依赖方向为 `App → Features → Core/Agent`，平台副作用通过协议注入。视图不得直接访问模型供应商或数据库，Agent Runtime 不依赖具体 SwiftUI 视图。

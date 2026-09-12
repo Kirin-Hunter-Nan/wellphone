@@ -63,6 +63,11 @@ struct WellPhoneApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     guard newPhase == .active else { return }
                     voiceActivationStore.recoverPendingActivation()
+                    Task {
+                        await taskController.recoverInterruptedTasks()
+                        await taskController.flushPendingCheckpoints()
+                        await taskController.flushPendingResultReports()
+                    }
                 }
         }
         .modelContainer(sharedModelContainer)

@@ -139,6 +139,62 @@ final class WellPhoneUITests: XCTestCase {
     }
 
     @MainActor
+    func testLiveBackgroundCoordinatorCompletesWhileSettingsIsActiveOnDevice() throws {
+        try requireLiveTravelE2E()
+        let app = XCUIApplication()
+        app.launch()
+        startNewConversation(in: app)
+
+        let composer = app.textFields["chat.composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        composer.typeText(
+            "帮我规划2026年10月20日至22日上海旅行，每天安排上午、下午和晚上，节奏轻松，喜欢博物馆和咖啡"
+        )
+        app.buttons["arrow.up"].tap()
+
+        let boundedProgress = app.staticTexts.matching(
+            NSPredicate(format: "label MATCHES %@", ".*第 [0-9]+/12 轮.*")
+        ).firstMatch
+        XCTAssertTrue(boundedProgress.waitForExistence(timeout: 90), "没有显示服务端任务进度")
+        capture("10-background-coordinator-started", app: app)
+
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.activate()
+        XCTAssertTrue(
+            settings.wait(for: .runningForeground, timeout: 15),
+            "设置 App 没有保持在前台"
+        )
+        settings.swipeUp()
+        settings.swipeDown()
+        capture("11-settings-remains-foreground", app: settings)
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let completionNotification = springboard.staticTexts["任务已完成"]
+        XCTAssertTrue(
+            completionNotification.waitForExistence(timeout: 300),
+            "WellPhone 未回到前台时没有收到本地完成通知"
+        )
+        XCTAssertEqual(
+            settings.state,
+            .runningForeground,
+            "后台任务完成时抢占了设置 App 的前台"
+        )
+        capture("12-background-completion-notification", app: settings)
+
+        app.activate()
+        let completion = app.staticTexts["已完成"].firstMatch
+        XCTAssertTrue(completion.waitForExistence(timeout: 20), "返回 WellPhone 后任务状态不是已完成")
+
+        let calendarAlert = app.alerts["是否添加到 Apple 日历？"]
+        if calendarAlert.waitForExistence(timeout: 5) {
+            calendarAlert.buttons["暂不"].tap()
+        }
+        XCTAssertTrue(completion.exists, "关闭日历选择后任务完成卡片消失")
+        capture("13-background-result-verified", app: app)
+    }
+
+    @MainActor
     func testLiveExistingTravelTaskDetailAndCalendarImportOnDevice() throws {
         try requireLiveTravelE2E()
         let app = XCUIApplication()
