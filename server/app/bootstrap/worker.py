@@ -15,12 +15,9 @@ from app.agent.tools import AgentLoopToolRegistry
 from app.tasks.models import ArtifactDraft, ServerTask, TaskOutcome
 from app.tasks.runner import ServerTaskRunner
 from app.tasks.stores.postgres import PostgreSQLServerTaskStore
-from app.tools.travel.planning import (
-    AppleMapsSearchClient,
-    ItinerarySubmitTool,
-    PlacesSearchTool,
-    make_travel_profile,
-)
+from app.tools.travel.maps import AppleMapsSearchClient
+from app.tools.travel.profile import make_travel_profile
+from app.tools.travel.tools import ItinerarySubmitTool, PlacesSearchTool
 
 
 class HarnessProbeHandler:

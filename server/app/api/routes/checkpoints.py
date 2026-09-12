@@ -9,7 +9,8 @@ from pydantic import ValidationError
 from app.api.http import error_response, read_body, validation_message
 from app.api.protocol import PROTOCOL_VERSION, TaskCheckpointSubmission
 from app.core.config import Settings
-from app.tasks.checkpoint_store import TaskCheckpointConflictError, TaskCheckpointStore
+from app.tasks.checkpoints.models import TaskCheckpointConflictError
+from app.tasks.checkpoints.repository import TaskCheckpointStore
 
 router = APIRouter()
 
