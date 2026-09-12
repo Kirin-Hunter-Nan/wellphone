@@ -8,6 +8,7 @@ struct ChatView: View {
     @State private var isSidebarPresented = false
     @State private var isTaskCenterPresented = false
     @State private var voiceSession = VoiceSessionController()
+    @State private var preparedVoiceActivationID: UUID?
 
     var body: some View {
         @Bindable var controller = controller
@@ -105,6 +106,12 @@ struct ChatView: View {
                 .onAppear {
                     voiceActivationStore.markPresented()
                 }
+            }
+            .onChange(of: voiceActivationStore.activationID, initial: true) { _, activationID in
+                guard let activationID,
+                      preparedVoiceActivationID != activationID else { return }
+                preparedVoiceActivationID = activationID
+                controller.startNewConversation()
             }
             .onReceive(NotificationCenter.default.publisher(for: .agentTaskNotificationOpened)) { _ in
                 isComposerFocused = false

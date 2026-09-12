@@ -36,7 +36,7 @@ final class ConversationController {
         self.taskController = taskController
         self.imageProcessor = imageProcessor
         self.attachmentFileStore = attachmentFileStore
-        restoreMostRecentConversation()
+        loadConversationHistory()
         taskController.onAssistantFollowUp = { [weak self] followUp in
             self?.appendAssistantFollowUp(followUp)
         }

@@ -42,23 +42,25 @@ extension ConversationController {
         conversations.sort { $0.updatedAt > $1.updatedAt }
     }
 
-    func restoreMostRecentConversation() {
+    func loadConversationHistory() {
         let conversationDescriptor = FetchDescriptor<Conversation>(
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
 
         do {
             conversations = try modelContext.fetch(conversationDescriptor)
-            guard let conversation = conversations.first else {
-                return
-            }
+            conversation = nil
+            messages = []
 
-            self.conversation = conversation
-            loadMessages(for: conversation)
-
-            if let interruptedMessage = messages.last,
-               interruptedMessage.deliveryState == .streaming {
-                interruptedMessage.deliveryState = .stopped
+            let streamingState = DeliveryState.streaming.rawValue
+            let interruptedDescriptor = FetchDescriptor<ChatMessage>(
+                predicate: #Predicate { $0.deliveryStateRawValue == streamingState }
+            )
+            let interruptedMessages = try modelContext.fetch(interruptedDescriptor)
+            if !interruptedMessages.isEmpty {
+                for message in interruptedMessages {
+                    message.deliveryState = .stopped
+                }
                 save()
             }
         } catch {

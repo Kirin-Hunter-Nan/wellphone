@@ -105,7 +105,7 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func conversationControllerRestoresAndSwitchesHistory() throws {
+    func conversationControllerStartsFreshAndSwitchesHistory() throws {
         let container = try makeContainer()
         let context = container.mainContext
         let older = Conversation(
@@ -141,13 +141,22 @@ struct WellPhoneTests {
             taskController: taskController
         )
 
-        #expect(controller.activeConversationID == newer.id)
+        #expect(controller.activeConversationID == nil)
         #expect(controller.conversations.map(\.id) == [newer.id, older.id])
-        #expect(controller.messages.first?.text == "新消息")
+        #expect(controller.messages.isEmpty)
 
         controller.selectConversation(older)
         #expect(controller.activeConversationID == older.id)
         #expect(controller.messages.first?.text == "旧消息")
+
+        controller.startNewConversation()
+        #expect(controller.activeConversationID == nil)
+        #expect(controller.messages.isEmpty)
+        #expect(controller.conversations.map(\.id) == [newer.id, older.id])
+
+        controller.selectConversation(newer)
+        #expect(controller.activeConversationID == newer.id)
+        #expect(controller.messages.first?.text == "新消息")
     }
 
     @Test @MainActor
