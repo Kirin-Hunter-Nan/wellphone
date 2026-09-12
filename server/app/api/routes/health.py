@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Request
 
 from app.api.http import error_response
-from app.conversations.store import ChatRequestStore
+from app.conversations.repository import ChatRequestStore
 from app.core.config import Settings
 from app.tasks.checkpoint_store import TaskCheckpointStore
 from app.tasks.store import ServerTaskStore

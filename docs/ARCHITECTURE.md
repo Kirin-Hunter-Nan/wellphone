@@ -25,7 +25,7 @@
 - `api/`：FastAPI 应用和面向客户端的 wire protocol。
 - `agent/`：LangGraph 循环及其稳定边界；`engine.py` 只负责编排，模型、Tool、Profile、Journal 和任务适配器分别位于对应模块，`loop.py` 仅保留兼容导出。
 - `tasks/`：长任务模型、存储协议、内存/PostgreSQL 实现、步骤投影和 Worker Runner 分模块维护；`jobs.py` 仅保留兼容导出。
-- `conversations/`：会话请求的幂等、历史上下文和响应回放。
+- `conversations/`：会话请求的幂等模型与存储协议、内存/PostgreSQL 实现，以及独立的历史重建和上下文裁剪策略；`store.py` 仅保留兼容导出。
 - `tool_results/`：设备端 Tool Result 与模型续接状态。
 - `tools/`：模型可调用的 capability catalog 与原子工具实现。
 - `providers/`：Qwen 等模型供应商适配器。
@@ -39,4 +39,4 @@ API 和 Worker 只在组合入口创建具体 PostgreSQL、Qwen 与 Apple Maps �
 
 ## 后续拆分规则
 
-单文件接近 500 行时应检查是否同时承担模型、存储、编排或展示职责。优先沿职责拆分，不以创建大量只有转发作用的文件为目标。FastAPI 的路由、Agent Loop 的运行边界，以及服务端任务的模型、存储和 Runner 均已分离；iOS 的服务端任务同步、设备端执行恢复、结果投递以及日历与完成提示也已从 `TaskController` 分离。下一步可拆分会话请求与 Tool Result 的存储协议和具体实现。
+单文件接近 500 行时应检查是否同时承担模型、存储、编排或展示职责。优先沿职责拆分，不以创建大量只有转发作用的文件为目标。FastAPI 的路由、Agent Loop 的运行边界、服务端任务生命周期，以及会话请求的存储与上下文策略均已分离；iOS 的服务端任务同步、设备端执行恢复、结果投递以及日历与完成提示也已从 `TaskController` 分离。下一步可拆分 Tool Result 的存储协议、续接状态和具体实现。

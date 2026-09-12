@@ -10,11 +10,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from app.conversations.store import (
-    ChatRequestStore,
-    InMemoryChatRequestStore,
-    PostgreSQLChatRequestStore,
-)
+from app.conversations.repository import ChatRequestStore
+from app.conversations.stores.memory import InMemoryChatRequestStore
+from app.conversations.stores.postgres import PostgreSQLChatRequestStore
 from app.core.config import Settings, load_settings
 from app.api.http import (
     error_response as _error,
