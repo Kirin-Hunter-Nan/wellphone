@@ -18,6 +18,7 @@ class LoopToolCall:
     id: str
     name: str
     arguments: dict[str, object]
+    argument_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,17 +68,26 @@ class QwenAgentLoopModel:
         for raw_call in raw_message.get("tool_calls") or []:
             function = raw_call.get("function") or {}
             arguments_value = function.get("arguments") or "{}"
-            arguments = (
-                json.loads(arguments_value)
-                if isinstance(arguments_value, str)
-                else arguments_value
-            )
+            argument_error: str | None = None
+            if isinstance(arguments_value, str):
+                try:
+                    arguments = json.loads(arguments_value)
+                except json.JSONDecodeError as error:
+                    arguments = {}
+                    argument_error = (
+                        "Tool arguments were not valid JSON "
+                        f"at line {error.lineno}, column {error.colno}"
+                    )
+            else:
+                arguments = arguments_value
             if not isinstance(arguments, dict):
-                raise AgentLoopError("Model Tool arguments must be a JSON object")
+                arguments = {}
+                argument_error = "Tool arguments must be a JSON object"
             call = LoopToolCall(
                 id=str(raw_call.get("id") or ""),
                 name=str(function.get("name") or ""),
                 arguments=arguments,
+                argument_error=argument_error,
             )
             if not call.id or not call.name:
                 raise AgentLoopError("Model returned an invalid Tool call")

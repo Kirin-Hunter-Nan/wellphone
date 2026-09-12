@@ -74,6 +74,17 @@ class AgentLoopToolRegistry:
                 "ok": False,
                 "error": {"code": "tool_not_found", "message": f"Tool {call.name} does not exist"},
             })
+        if call.argument_error is not None:
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "invalid_tool_arguments",
+                    "message": (
+                        f"{call.argument_error}. Return exactly one valid JSON object "
+                        "that matches the Tool schema."
+                    ),
+                },
+            })
         try:
             arguments = tool.arguments_model.model_validate(call.arguments)
         except ValidationError as original_error:

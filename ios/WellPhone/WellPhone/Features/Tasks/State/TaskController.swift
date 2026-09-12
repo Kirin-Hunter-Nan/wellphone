@@ -27,6 +27,7 @@ final class TaskController {
     let checkpointReporter: any TaskCheckpointReporting
     let serverTaskClient: (any ServerTaskServing)?
     let calendarImporter: (any TravelCalendarImporting)?
+    let backgroundCoordinator: any AgentBackgroundCoordinating
     let executionRetryPolicy: ToolExecutionRetryPolicy
     let executionDeadlinePolicy: ToolExecutionDeadlinePolicy
     @ObservationIgnored
@@ -56,6 +57,7 @@ final class TaskController {
         checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter(),
         serverTaskClient: (any ServerTaskServing)? = nil,
         calendarImporter: (any TravelCalendarImporting)? = nil,
+        backgroundCoordinator: any AgentBackgroundCoordinating = DisabledAgentBackgroundCoordinator(),
         executionRetryPolicy: ToolExecutionRetryPolicy = .standard,
         executionDeadlinePolicy: ToolExecutionDeadlinePolicy = .standard
     ) {
@@ -66,9 +68,11 @@ final class TaskController {
         self.checkpointReporter = checkpointReporter
         self.serverTaskClient = serverTaskClient
         self.calendarImporter = calendarImporter
+        self.backgroundCoordinator = backgroundCoordinator
         self.executionRetryPolicy = executionRetryPolicy
         self.executionDeadlinePolicy = executionDeadlinePolicy
         refresh()
+        configureBackgroundCoordinator()
     }
 
     convenience init(modelContext: ModelContext) {
@@ -85,7 +89,8 @@ final class TaskController {
             serverTaskClient: URLSessionServerTaskClient(
                 baseURL: AppConfiguration.modelProxyBaseURL
             ),
-            calendarImporter: EventKitTravelCalendarImporter()
+            calendarImporter: EventKitTravelCalendarImporter(),
+            backgroundCoordinator: ContinuedProcessingBackgroundCoordinator()
         )
     }
 
@@ -224,6 +229,7 @@ final class TaskController {
             if task.status == .waitingForConfirmation {
                 await confirmServerTask(task)
             } else {
+                beginContinuedProcessing(for: task)
                 startPollingServerTask(task)
             }
             return
@@ -263,6 +269,7 @@ final class TaskController {
             $0.executionLocation == .server && $0.status.isActive
         }
         for task in remoteTasks {
+            backgroundCoordinator.register(taskID: task.id)
             startPollingServerTask(task)
         }
         let interruptedTasks = tasks.filter {

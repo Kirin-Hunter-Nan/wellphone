@@ -10,6 +10,7 @@ import SwiftData
 
 @main
 struct WellPhoneApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     private let sharedModelContainer: ModelContainer
     @State private var conversationController: ConversationController
     @State private var taskController: TaskController
@@ -55,6 +56,14 @@ struct WellPhoneApp: App {
                     await taskController.recoverInterruptedTasks()
                     await taskController.flushPendingCheckpoints()
                     await taskController.flushPendingResultReports()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active else { return }
+                    Task {
+                        await taskController.recoverInterruptedTasks()
+                        await taskController.flushPendingCheckpoints()
+                        await taskController.flushPendingResultReports()
+                    }
                 }
         }
         .modelContainer(sharedModelContainer)

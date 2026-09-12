@@ -100,6 +100,32 @@ async def test_invalid_arguments_return_observation_without_executing_tool(
     assert tool.executions == 0
 
 
+async def test_malformed_json_arguments_return_a_corrective_observation(
+    anyio_backend,
+) -> None:
+    tool = InspectTool()
+    result = await AgentLoopToolRegistry([tool]).execute(
+        LoopToolCall(
+            "call-1",
+            "inspect",
+            {},
+            argument_error="Tool arguments were not valid JSON at line 1, column 40",
+        ),
+        context(),
+        ("inspect",),
+    )
+
+    assert result.observation["ok"] is False
+    assert result.observation["error"] == {
+        "code": "invalid_tool_arguments",
+        "message": (
+            "Tool arguments were not valid JSON at line 1, column 40. "
+            "Return exactly one valid JSON object that matches the Tool schema."
+        ),
+    }
+    assert tool.executions == 0
+
+
 async def test_repairs_nested_json_arguments_and_merges_tool_state(
     anyio_backend,
 ) -> None:
