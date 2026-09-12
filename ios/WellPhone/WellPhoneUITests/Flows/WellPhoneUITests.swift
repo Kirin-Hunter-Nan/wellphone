@@ -34,7 +34,7 @@ final class WellPhoneUITests: XCTestCase {
     }
 
     @MainActor
-    func testTappingConversationDismissesComposerKeyboard() throws {
+    func testOpeningSidebarDismissesComposerKeyboard() throws {
         let app = XCUIApplication()
         app.launch()
 
@@ -43,11 +43,12 @@ final class WellPhoneUITests: XCTestCase {
         composer.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2))
 
-        let conversation = app.scrollViews["chat.conversation"]
-        XCTAssertTrue(conversation.waitForExistence(timeout: 2))
-        conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        let sidebarButton = app.buttons["打开侧边栏"]
+        XCTAssertTrue(sidebarButton.waitForExistence(timeout: 2))
+        sidebarButton.tap()
 
         XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1))
+        XCTAssertTrue(app.buttons["新聊天"].waitForExistence(timeout: 2))
     }
 
     @MainActor

@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable
 from contextlib import asynccontextmanager
-from contextvars import Context
-import json
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -20,11 +16,19 @@ from app.conversations.store import (
     PostgreSQLChatRequestStore,
 )
 from app.core.config import Settings, load_settings
-from app.api.protocol import (
-    ChatRequest,
-    PROTOCOL_VERSION,
-    TaskCheckpointSubmission,
-    ToolResultSubmission,
+from app.api.http import (
+    error_response as _error,
+    read_body as _read_body,
+    validation_message as _validation_message,
+)
+from app.api.protocol import ChatRequest, PROTOCOL_VERSION, ToolResultSubmission
+from app.api.routes.checkpoints import router as checkpoint_router
+from app.api.routes.health import router as health_router
+from app.api.routes.tasks import router as task_router
+from app.api.support import (
+    assistant_content as _assistant_content,
+    deterministic_tool_followup as _deterministic_tool_followup,
+    finish_store_operation as _finish_store_operation,
 )
 from app.providers.base import ModelProvider, ProviderError, ProviderToolCallContext
 from app.providers.qwen import QwenProvider
@@ -36,13 +40,11 @@ from app.tool_results.store import (
 from app.tasks.checkpoint_store import (
     InMemoryTaskCheckpointStore,
     PostgreSQLTaskCheckpointStore,
-    TaskCheckpointConflictError,
     TaskCheckpointStore,
 )
 from app.tasks.jobs import (
     InMemoryServerTaskStore,
     PostgreSQLServerTaskStore,
-    ServerTaskCreate,
     ServerTaskStore,
 )
 
@@ -108,26 +110,9 @@ def create_app(
         version="0.10.0",
         lifespan=lifespan,
     )
-
-    @application.get("/health")
-    async def health(request: Request):
-        active_settings: Settings = request.app.state.settings
-        active_store: ToolResultStore = request.app.state.result_store
-        active_chat_store: ChatRequestStore = request.app.state.chat_request_store
-        active_task_store: TaskCheckpointStore = request.app.state.task_checkpoint_store
-        active_server_task_store: ServerTaskStore = request.app.state.server_task_store
-        if (
-            not await active_store.is_healthy()
-            or not await active_chat_store.is_healthy()
-            or not await active_task_store.is_healthy()
-            or not await active_server_task_store.is_healthy()
-        ):
-            return _error(503, "database_unavailable", "Database is unavailable")
-        return {
-            "status": "ok",
-            "model": active_settings.model,
-            "protocolVersion": "1.0",
-        }
+    application.include_router(health_router)
+    application.include_router(checkpoint_router)
+    application.include_router(task_router)
 
     @application.post("/v1/conversations/{conversation_id}/messages")
     async def create_message(conversation_id: UUID, request: Request):
@@ -385,168 +370,7 @@ def create_app(
             "protocolVersion": PROTOCOL_VERSION,
         }
 
-    @application.post("/v1/conversations/{conversation_id}/task-checkpoints")
-    async def submit_task_checkpoint(conversation_id: UUID, request: Request):
-        active_settings: Settings = request.app.state.settings
-        body_or_error = await _read_body(request, active_settings.max_request_bytes)
-        if isinstance(body_or_error, JSONResponse):
-            return body_or_error
-        try:
-            checkpoint = TaskCheckpointSubmission.model_validate_json(body_or_error)
-        except ValidationError as error:
-            return _error(400, "invalid_request", _validation_message(error))
-
-        active_task_store: TaskCheckpointStore = request.app.state.task_checkpoint_store
-        try:
-            recorded = await active_task_store.record(conversation_id, checkpoint)
-        except TaskCheckpointConflictError as error:
-            return _error(409, "task_checkpoint_conflict", str(error))
-        return {
-            "accepted": True,
-            "duplicate": recorded.duplicate,
-            "applied": recorded.applied,
-            "currentRevision": recorded.current_revision,
-            "gap": recorded.gap,
-            "protocolVersion": PROTOCOL_VERSION,
-        }
-
-    @application.post("/v1/conversations/{conversation_id}/tasks", status_code=201)
-    async def create_server_task(conversation_id: UUID, request: Request):
-        active_settings: Settings = request.app.state.settings
-        body_or_error = await _read_body(request, active_settings.max_request_bytes)
-        if isinstance(body_or_error, JSONResponse):
-            return body_or_error
-        try:
-            task_request = ServerTaskCreate.model_validate_json(body_or_error)
-        except ValidationError as error:
-            return _error(400, "invalid_request", _validation_message(error))
-        store: ServerTaskStore = request.app.state.server_task_store
-        task = await store.create(conversation_id, task_request)
-        return task.model_dump(mode="json", by_alias=True)
-
-    @application.get("/v1/conversations/{conversation_id}/tasks")
-    async def list_server_tasks(conversation_id: UUID, request: Request):
-        store: ServerTaskStore = request.app.state.server_task_store
-        tasks = await store.list(conversation_id)
-        return {
-            "tasks": [task.model_dump(mode="json", by_alias=True) for task in tasks],
-            "protocolVersion": PROTOCOL_VERSION,
-        }
-
-    @application.get("/v1/tasks/{task_id}")
-    async def get_server_task(task_id: UUID, request: Request):
-        store: ServerTaskStore = request.app.state.server_task_store
-        task = await store.get(task_id)
-        if task is None:
-            return _error(404, "task_not_found", "Task does not exist")
-        return task.model_dump(mode="json", by_alias=True)
-
-    @application.post("/v1/tasks/{task_id}/confirm")
-    async def confirm_server_task(task_id: UUID, request: Request):
-        store: ServerTaskStore = request.app.state.server_task_store
-        task = await store.confirm(task_id)
-        if task is None:
-            return _error(404, "task_not_found", "Task does not exist")
-        return task.model_dump(mode="json", by_alias=True)
-
-    @application.post("/v1/tasks/{task_id}/cancel")
-    async def cancel_server_task(task_id: UUID, request: Request):
-        store: ServerTaskStore = request.app.state.server_task_store
-        task = await store.cancel(task_id)
-        if task is None:
-            return _error(404, "task_not_found", "Task does not exist")
-        return task.model_dump(mode="json", by_alias=True)
-
     return application
-
-
-async def _finish_store_operation(operation: Awaitable[None]) -> None:
-    """Let persistence cleanup finish even when the request task is cancelled."""
-    task = asyncio.create_task(operation, context=Context())
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # Starlette cancels the whole request scope after a client disconnects.
-        # The detached task must be allowed to commit after this coroutine exits.
-        return
-
-
-def _assistant_content(events: list[str]) -> str | None:
-    chunks: list[str] = []
-    for event in events:
-        for line in event.splitlines():
-            if not line.startswith("data:"):
-                continue
-            try:
-                payload = json.loads(line[5:].strip())
-            except json.JSONDecodeError:
-                continue
-            if payload.get("type") == "assistant.delta":
-                text = payload.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-    content = "".join(chunks).strip()
-    return content or None
-
-
-def _deterministic_tool_followup(submission: ToolResultSubmission) -> str | None:
-    if submission.capability != "travel.plan":
-        return None
-    if submission.status == "verified":
-        summary = "旅行规划已经完成。"
-        itinerary_text: str | None = None
-        if submission.result:
-            supplied = submission.result.get("summary")
-            if isinstance(supplied, str) and supplied.strip():
-                summary = supplied.strip()
-            artifacts = submission.result.get("artifacts")
-            if isinstance(artifacts, list):
-                for artifact in artifacts:
-                    if not isinstance(artifact, dict):
-                        continue
-                    payload = artifact.get("payload")
-                    if (
-                        artifact.get("contentType") == "text/markdown"
-                        and isinstance(payload, str)
-                        and payload.strip()
-                    ):
-                        itinerary_text = payload.strip()
-                        break
-        if itinerary_text:
-            return f"{summary}\n\n{itinerary_text}"
-        return f"{summary}\n\n当前结果没有可展示的文本行程，请在任务详情中查看。"
-    if submission.status == "declined":
-        return "旅行规划任务已取消，没有生成或写入任何行程。"
-    message = submission.error.message if submission.error else "旅行规划暂时未能完成。"
-    return f"旅行规划失败：{message}"
-
-
-def _validation_message(error: ValidationError) -> str:
-    first = error.errors(include_url=False)[0]
-    return str(first.get("msg", "Request body is invalid"))
-
-
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"code": code, "message": message}},
-    )
-
-
-async def _read_body(request: Request, max_request_bytes: int) -> bytes | JSONResponse:
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            declared_length = int(content_length)
-        except ValueError:
-            return _error(400, "invalid_request", "Content-Length is invalid")
-        if declared_length > max_request_bytes:
-            return _error(413, "request_too_large", "Request body is too large")
-
-    body = await request.body()
-    if len(body) > max_request_bytes:
-        return _error(413, "request_too_large", "Request body is too large")
-    return body
 
 
 app = create_app()

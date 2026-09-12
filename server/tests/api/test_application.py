@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.conversations.store import InMemoryChatRequestStore
 from app.core.config import Settings
-from app.api.application import _deterministic_tool_followup, _finish_store_operation, create_app
+from app.api.application import create_app
+from app.api.support import deterministic_tool_followup, finish_store_operation
 from app.tool_results.store import InMemoryToolResultStore
 from app.api.protocol import (
     ChatRequest,
@@ -46,7 +47,7 @@ def test_travel_tool_followup_points_to_task_detail_without_claiming_files() -> 
         },
     })
 
-    reply = _deterministic_tool_followup(submission)
+    reply = deterministic_tool_followup(submission)
 
     assert reply is not None
     assert "# 上海三日行程" in reply
@@ -425,7 +426,7 @@ def test_persistence_cleanup_survives_request_cancellation() -> None:
         current_task = asyncio.current_task()
         assert current_task is not None
         asyncio.get_running_loop().call_soon(current_task.cancel)
-        await _finish_store_operation(cleanup())
+        await finish_store_operation(cleanup())
         await asyncio.sleep(0)
 
     asyncio.run(cancel_during_cleanup())
