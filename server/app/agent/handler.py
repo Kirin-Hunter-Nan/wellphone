@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from app.agent.engine import AgentLoopEngine
 from app.agent.errors import AgentLoopError
 from app.agent.profile import AgentTaskProfile
-from app.tasks.jobs import ProgressReporter, ServerTask, TaskOutcome
+from app.tasks.models import ServerTask, TaskOutcome
+from app.tasks.runner import ProgressReporter
 
 class AgentLoopTaskHandler:
     def __init__(

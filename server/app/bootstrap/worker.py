@@ -12,13 +12,9 @@ from app.agent.handler import AgentLoopTaskHandler
 from app.agent.journal import PostgreSQLAgentLoopJournal
 from app.agent.model import QwenAgentLoopModel
 from app.agent.tools import AgentLoopToolRegistry
-from app.tasks.jobs import (
-    ArtifactDraft,
-    PostgreSQLServerTaskStore,
-    ServerTask,
-    ServerTaskRunner,
-    TaskOutcome,
-)
+from app.tasks.models import ArtifactDraft, ServerTask, TaskOutcome
+from app.tasks.runner import ServerTaskRunner
+from app.tasks.stores.postgres import PostgreSQLServerTaskStore
 from app.tools.travel.planning import (
     AppleMapsSearchClient,
     ItinerarySubmitTool,

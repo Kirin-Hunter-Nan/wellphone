@@ -9,7 +9,8 @@ from pydantic import ValidationError
 from app.api.http import error_response, read_body, validation_message
 from app.api.protocol import PROTOCOL_VERSION
 from app.core.config import Settings
-from app.tasks.jobs import ServerTaskCreate, ServerTaskStore
+from app.tasks.models import ServerTaskCreate
+from app.tasks.store import ServerTaskStore
 
 router = APIRouter()
 

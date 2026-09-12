@@ -11,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.agent.errors import AgentLoopError
 from app.agent.model import LoopToolCall
-from app.tasks.jobs import ServerTask
+from app.tasks.models import ServerTask
 
 
 @dataclass(slots=True)

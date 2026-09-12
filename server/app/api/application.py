@@ -42,11 +42,9 @@ from app.tasks.checkpoint_store import (
     PostgreSQLTaskCheckpointStore,
     TaskCheckpointStore,
 )
-from app.tasks.jobs import (
-    InMemoryServerTaskStore,
-    PostgreSQLServerTaskStore,
-    ServerTaskStore,
-)
+from app.tasks.store import ServerTaskStore
+from app.tasks.stores.memory import InMemoryServerTaskStore
+from app.tasks.stores.postgres import PostgreSQLServerTaskStore
 
 
 def create_app(

@@ -14,7 +14,8 @@ from app.agent.journal import AgentLoopJournal
 from app.agent.model import AgentLoopModel, LoopToolCall
 from app.agent.profile import AgentTaskProfile
 from app.agent.tools import AgentLoopToolRegistry, LoopToolContext, _merge_state
-from app.tasks.jobs import ProgressReporter, ServerTask, TaskOutcome
+from app.tasks.models import ServerTask, TaskOutcome
+from app.tasks.runner import ProgressReporter
 
 class AgentGraphState(TypedDict):
     messages: list[dict[str, object]]

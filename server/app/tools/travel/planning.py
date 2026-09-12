@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.agent.profile import AgentTaskProfile
 from app.agent.tools import LoopToolContext, LoopToolResult
-from app.tasks.jobs import ArtifactDraft, ServerTask, TaskOutcome
+from app.tasks.models import ArtifactDraft, ServerTask, TaskOutcome
 
 
 class TravelPlanInput(BaseModel):

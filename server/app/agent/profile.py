@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import json
 
-from app.tasks.jobs import ServerTask, TaskOutcome
+from app.tasks.models import ServerTask, TaskOutcome
 
 
 @dataclass(frozen=True, slots=True)
