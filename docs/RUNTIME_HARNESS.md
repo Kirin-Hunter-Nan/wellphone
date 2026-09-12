@@ -6,9 +6,11 @@
 
 `reminder_create` 只存在于 Qwen Provider 内部，并在 Python 服务端被转换为平台无关 capability `reminder.create`。Swift 客户端不识别任何模型厂商的 Tool 名称。参数解析、用户确认、EventKit 写入和回读验证不是独立的模型 Tool。
 
-`travel_plan` 同样只是聊天阶段的意图入口，并映射为 `travel.plan` 长任务。旅行规划本身没有专属 Loop：worker 注册唯一的通用 `AgentLoopTaskHandler`，由 `travel.plan` Profile 提供系统提示词、允许使用的 Tool、循环预算、进度步骤和最终结果构建器。目前的原子 Tool 是 `places_search` 与 `itinerary_submit`；后续能力通过新增或复用 Tool、再增加轻量 Profile 接入，不需要复制一套业务循环。
+`travel_plan` 同样只是聊天阶段的意图入口，并映射为 `travel.plan` 长任务。旅行规划本身没有专属 Loop：worker 注册唯一的通用 `AgentLoopTaskHandler`，其内部使用 LangGraph `StateGraph` 的条件边在模型节点、Tool 节点与结束状态之间路由。`travel.plan` Profile 只提供系统提示词、允许使用的 Tool、循环预算、进度步骤和最终结果构建器。目前的原子 Tool 是 `places_search` 与 `itinerary_submit`；后续能力通过新增或复用 Tool、再增加轻量 Profile 接入，不需要复制一套业务循环。
 
 服务端每轮模型决策、Tool Observation、状态更新与最终输出都写入 PostgreSQL `agent_loop_events`。worker 租约过期或进程重启后，会恢复消息与工具状态；若中断发生在模型 Tool Call 已落库而结果尚未落库之间，恢复流程会继续执行该待处理调用，而不是重新开始整项规划。
+
+旅行 Profile 最多允许 12 次模型决策，任务进度展示当前轮次与上限。LangGraph 的 recursion limit 提供第二层循环保护；同一 Tool 错误连续出现三次时通过条件边提前结束，并被标记为不可重试失败。Qwen 若把应为对象的顶层 Tool 参数编码成嵌套 JSON 字符串，Registry 只在首次 Schema 校验失败后尝试解包并重新校验。
 
 ```text
 Chat intent Tool -> capability -> user confirmation -> server task queue

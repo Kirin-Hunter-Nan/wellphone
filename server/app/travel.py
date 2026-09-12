@@ -199,7 +199,7 @@ def make_travel_profile() -> AgentTaskProfile:
         capability="travel.plan",
         allowed_tools=("places_search", "itinerary_submit"),
         steps=("理解旅行目标", "自主检索与规划", "校验并修订", "生成最终行程"),
-        max_iterations=32,
+        max_iterations=12,
         max_tool_calls=112,
         system_prompt=(
             "你是 WellPhone 的旅行规划 Agent，运行在一个有预算上限的工具循环中。"

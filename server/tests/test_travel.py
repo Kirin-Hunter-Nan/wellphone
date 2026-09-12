@@ -4,8 +4,11 @@ from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
+import pytest
+
 from app.agent_loop import (
     AgentLoopEngine,
+    AgentLoopRepeatedFailure,
     AgentLoopTaskHandler,
     AgentLoopToolRegistry,
     InMemoryAgentLoopJournal,
@@ -88,11 +91,15 @@ async def test_generic_loop_uses_observations_revises_and_builds_travel_artifact
     }
     model = ScriptedLoopModel([
         # First submission is rejected because the place has not been searched.
-        tool_turn("submit_1", "itinerary_submit", {"plan": plan}),
+        tool_turn("submit_1", "itinerary_submit", {
+            "plan": json.dumps(plan, ensure_ascii=False),
+        }),
         tool_turn("search_1", "places_search", {
             "query": "上海博物馆", "destination": "上海",
         }),
-        tool_turn("submit_2", "itinerary_submit", {"plan": plan}),
+        tool_turn("submit_2", "itinerary_submit", {
+            "plan": json.dumps(plan, ensure_ascii=False),
+        }),
     ])
     journal = InMemoryAgentLoopJournal()
     engine = AgentLoopEngine(
@@ -117,9 +124,11 @@ async def test_generic_loop_uses_observations_revises_and_builds_travel_artifact
         attemptCount=1, createdAt=now, updatedAt=now,
     )
     progress: list[str] = []
+    progress_details: list[str] = []
 
     async def report(phase, value, detail, steps, current_step) -> None:
         progress.append(phase)
+        progress_details.append(detail)
 
     outcome = await handler.run(task, report)
     events = await journal.load(task.id)
@@ -134,6 +143,7 @@ async def test_generic_loop_uses_observations_revises_and_builds_travel_artifact
     assert [event.event_type for event in events].count("model.turn") == 3
     assert [event.event_type for event in events].count("tool.result") == 3
     assert progress[-1] == "finalizing"
+    assert any("第 1/12 轮" in detail for detail in progress_details)
 
 
 async def test_generic_loop_resumes_a_persisted_pending_tool_call(
@@ -193,3 +203,47 @@ async def test_generic_loop_resumes_a_persisted_pending_tool_call(
     assert model.messages_seen[0][-1]["tool_call_id"] == "search_before_restart"
     assert outcome.summary == "上海一日慢游已完成，共规划 1 天。"
     assert [event.event_type for event in events].count("tool.result") == 2
+
+
+async def test_langgraph_stops_after_three_identical_tool_failures(
+    anyio_backend,
+) -> None:
+    bad_arguments = {"plan": "not-json"}
+    model = ScriptedLoopModel([
+        tool_turn("bad_1", "itinerary_submit", bad_arguments),
+        tool_turn("bad_2", "itinerary_submit", bad_arguments),
+        tool_turn("bad_3", "itinerary_submit", bad_arguments),
+    ])
+    journal = InMemoryAgentLoopJournal()
+    handler = AgentLoopTaskHandler(
+        AgentLoopEngine(
+            model,
+            AgentLoopToolRegistry([
+                PlacesSearchTool(FakeMaps()),  # type: ignore[arg-type]
+                ItinerarySubmitTool(),
+            ]),
+            journal,
+        ),
+        [make_travel_profile()],
+    )
+    now = datetime.now(timezone.utc)
+    task = ServerTask(
+        id=uuid4(), conversationId=uuid4(), capability="travel.plan",
+        title="规划上海旅行",
+        input={
+            "destination": "上海", "startDate": "2026-10-01",
+            "endDate": "2026-10-01", "pace": "relaxed",
+        },
+        status="running", phase="starting", progress=0, requiresConfirmation=True,
+        attemptCount=1, createdAt=now, updatedAt=now,
+    )
+
+    async def report(phase, value, detail, steps, current_step) -> None:
+        pass
+
+    with pytest.raises(AgentLoopRepeatedFailure):
+        await handler.run(task, report)
+
+    events = await journal.load(task.id)
+    assert len(model.messages_seen) == 3
+    assert [event.event_type for event in events].count("tool.result") == 3

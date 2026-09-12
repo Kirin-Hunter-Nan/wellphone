@@ -2,7 +2,7 @@
 
 一个面向 iPhone 的无界面多模态 Agent。用户通过文字、语音、图片或文件下达任务后，可以继续使用当前 App；Agent 在 iOS 允许的后台执行窗口内完成推理、文件处理、系统能力调用和服务 API 操作，全程不抢占屏幕、键盘或输入焦点。
 
-> 当前阶段：设备端与服务端 Harness 已贯通。`reminder.create` 在 iPhone 上确认、执行并验证；服务端长任务由统一 Agent Loop 驱动，`travel.plan` 只提供任务 Profile 与原子 Tool 白名单。聊天已支持相册图片选择、发送前预览、本地附件持久化，以及 Qwen 兼容的多模态 Content Parts。聊天请求、权威对话历史、Tool Result、任务检查点、服务端任务租约、Loop 事件与产物均由 PostgreSQL 协调。
+> 当前阶段：设备端与服务端 Harness 已贯通。`reminder.create` 在 iPhone 上确认、执行并验证；服务端长任务由 LangGraph 统一 Agent Loop 驱动，`travel.plan` 只提供任务 Profile 与原子 Tool 白名单。聊天已支持相册图片选择、发送前预览、本地附件持久化，以及 Qwen 兼容的多模态 Content Parts。聊天请求、权威对话历史、Tool Result、任务检查点、服务端任务租约、Loop 事件与产物均由 PostgreSQL 协调。
 
 ## 核心原则
 
@@ -50,7 +50,7 @@ flowchart LR
 - iOS：Swift 6、SwiftUI、Swift Concurrency、SwiftData、App Intents、BackgroundTasks
 - 系统能力：PhotoKit、Vision、PDFKit/Core Graphics、EventKit、Keychain、OSLog
 - 网络：URLSession、Background URLSession、OAuth 2.0
-- 服务端：Python 3.12+、FastAPI、Provider Adapter、结构化输出校验、请求租约、权威会话历史与响应回放
+- 服务端：Python 3.12+、FastAPI、LangGraph、Provider Adapter、结构化输出校验、请求租约、权威会话历史与响应回放
 - 数据库：PostgreSQL 18、Psycopg 3 异步连接池
 - 模型：支持多模态输入、JSON Schema/结构化输出与工具调用的模型
 

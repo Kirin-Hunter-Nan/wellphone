@@ -541,7 +541,10 @@ class ServerTaskRunner:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            retry = task.attempt_count < self._max_attempts
+            retry = (
+                getattr(error, "retryable", True)
+                and task.attempt_count < self._max_attempts
+            )
             await self._store.fail(
                 task.id, self._worker_id, str(error), retry=retry,
                 retry_delay_seconds=min(2 ** task.attempt_count, 30),

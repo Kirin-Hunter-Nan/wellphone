@@ -75,3 +75,34 @@ async def test_runner_retries_then_marks_task_failed(anyio_backend) -> None:
     assert failed is not None
     assert failed.status == "failed"
     assert failed.attempt_count == 2
+
+
+class PermanentFailure(RuntimeError):
+    retryable = False
+
+
+class NonRetryableHandler:
+    capability = "test.non-retryable"
+
+    async def run(self, task: ServerTask, report) -> TaskOutcome:
+        raise PermanentFailure("invalid repeated model output")
+
+
+async def test_runner_does_not_retry_permanent_agent_failures(anyio_backend) -> None:
+    store = InMemoryServerTaskStore()
+    task = await store.create(
+        __import__("uuid").uuid4(),
+        ServerTaskCreate(
+            capability="test.non-retryable", title="不可重试任务", input={},
+            requiresConfirmation=False,
+        ),
+    )
+
+    await ServerTaskRunner(
+        store, [NonRetryableHandler()], worker_id="worker", max_attempts=3
+    ).run_once()
+    failed = await store.get(task.id)
+
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.attempt_count == 1
