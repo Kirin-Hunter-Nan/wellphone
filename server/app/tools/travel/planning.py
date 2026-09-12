@@ -9,7 +9,8 @@ from urllib.parse import urlencode
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.agent.loop import AgentTaskProfile, LoopToolContext, LoopToolResult
+from app.agent.profile import AgentTaskProfile
+from app.agent.tools import LoopToolContext, LoopToolResult
 from app.tasks.jobs import ArtifactDraft, ServerTask, TaskOutcome
 
 

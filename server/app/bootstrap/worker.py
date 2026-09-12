@@ -7,13 +7,11 @@ import os
 import socket
 
 from app.core.config import load_settings
-from app.agent.loop import (
-    AgentLoopEngine,
-    AgentLoopTaskHandler,
-    AgentLoopToolRegistry,
-    PostgreSQLAgentLoopJournal,
-    QwenAgentLoopModel,
-)
+from app.agent.engine import AgentLoopEngine
+from app.agent.handler import AgentLoopTaskHandler
+from app.agent.journal import PostgreSQLAgentLoopJournal
+from app.agent.model import QwenAgentLoopModel
+from app.agent.tools import AgentLoopToolRegistry
 from app.tasks.jobs import (
     ArtifactDraft,
     PostgreSQLServerTaskStore,
