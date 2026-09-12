@@ -30,9 +30,9 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用于接收你的语音指令并发送给 WellPhone Agent。</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>仅在您确认后，将旅行行程添加到系统日历。</string>
+	<string>在您明确要求时，将旅行行程添加到系统日历。</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>在您确认后，将任务写入系统提醒事项并验证结果。</string>
+	<string>根据您的明确指令，将任务写入系统提醒事项并验证结果。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

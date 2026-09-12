@@ -38,7 +38,10 @@ extension ConversationController {
                             sourceMessageID: sourceMessageID
                         )
                         response.relatedTaskID = task?.id
-                        response.text = "请确认这项操作"
+                        response.text = "任务正在执行"
+                        if let taskID = task?.id {
+                            await self?.taskController.startTask(taskID: taskID)
+                        }
                     case .done:
                         break
                     }

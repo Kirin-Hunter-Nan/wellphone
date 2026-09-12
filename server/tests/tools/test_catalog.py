@@ -68,3 +68,27 @@ def test_travel_origin_is_optional_and_does_not_block_destination_local_planning
     }
     assert "Origin is optional" in travel_tool["description"]
     assert "plan only transportation within the destination" in travel_tool["description"]
+    assert "addToCalendar" in travel_tool["parameters"]["properties"]
+
+
+def test_travel_calendar_consent_is_explicit_and_defaults_to_false() -> None:
+    catalog = ModelToolCatalog()
+    base_arguments = {
+        "destination": "上海",
+        "startDate": "2026-10-01",
+        "endDate": "2026-10-02",
+    }
+
+    default_request = catalog.normalize(
+        model_name="travel_plan",
+        tool_call_id="call_without_calendar",
+        arguments_json=json.dumps(base_arguments),
+    )
+    explicit_request = catalog.normalize(
+        model_name="travel_plan",
+        tool_call_id="call_with_calendar",
+        arguments_json=json.dumps({**base_arguments, "addToCalendar": True}),
+    )
+
+    assert default_request.arguments["addToCalendar"] is False
+    assert explicit_request.arguments["addToCalendar"] is True

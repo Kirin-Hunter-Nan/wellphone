@@ -9,12 +9,12 @@
 | 层级 | 范围 | 主要验证内容 | 默认执行 |
 |---|---|---|---|
 | 服务端单元测试 | `server/tests/agent`、`tools`、`providers` | Agent 轮次、Tool 预算、调用计数、白名单、参数校验、Qwen 流解码 | 是 |
-| 服务端状态测试 | `server/tests/tasks`、`conversations`、`tool_results` | 任务确认、租约、重试、断点恢复、幂等、乱序检查点、旧 Worker 隔离 | 是 |
+| 服务端状态测试 | `server/tests/tasks`、`conversations`、`tool_results` | 自动入队、兼容确认、租约、重试、断点恢复、幂等、乱序检查点、旧 Worker 隔离 | 是 |
 | API 集成测试 | `server/tests/api` | HTTP 校验、SSE、历史上下文、请求回放、Tool continuation、任务生命周期 | 是 |
 | PostgreSQL 契约测试 | `server/tests/postgres` | 生产存储重开恢复、数据库约束、任务与 Journal、会话与 Tool Result | 配置隔离数据库后执行 |
-| iOS 单元测试 | `WellPhoneTests` | SwiftData 恢复、提醒执行/验证、重试上限、取消竞态、Checkpoint 与 Tool Result 重传、多模态编码 | 是 |
+| iOS 单元测试 | `WellPhoneTests` | 自动启动、SwiftData 恢复、提醒执行/验证、日历显式授权、重试上限、取消竞态、Checkpoint 与 Tool Result 重传、多模态编码 | 是 |
 | iOS UI 冒烟测试 | `WellPhoneUITests` | 启动、侧边栏、键盘焦点和基础导航 | 建议提交前执行 |
-| 真机旅行 E2E | `testLiveTravelTaskEndToEndOnDevice` | 真实 Qwen、后台切换、12 轮上限展示、完成回复、一次性日历弹窗、任务详情导入 | 手动显式开启 |
+| 真机旅行 E2E | `testLiveTravelTaskEndToEndOnDevice` | 真实 Qwen、无二次确认、后台切换、12 轮上限展示、精简完成卡、自然语言回复、一次性日历弹窗 | 手动显式开启 |
 
 ## 关键不变量
 
@@ -27,6 +27,8 @@
 - Tool Call、聊天请求、Checkpoint 和 Tool Result 的幂等键不得被不同内容复用。
 - Checkpoint 可以乱序到达，但旧 revision 不得回滚当前快照。
 - 模型返回未知 Tool、非法参数或畸形流时，客户端收到标准协议错误，不得执行副作用。
+- 明确的执行指令必须自动开始；缺少必要参数时必须澄清，不能以普通任务卡替代澄清。
+- 旅行请求只有在 `addToCalendar=true` 时才自动写入日历，否则完成后只提供一次选择提示。
 - iOS 系统写入必须“执行后回读验证”；恢复时优先查找已有写入，再决定是否使用相同幂等键重试。
 
 ## 执行命令

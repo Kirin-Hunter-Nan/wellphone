@@ -67,7 +67,7 @@ struct URLSessionServerTaskClient: ServerTaskServing {
             let capability: String
             let title: String
             let input: [String: JSONValue]
-            let requiresConfirmation = true
+            let requiresConfirmation = false
             let toolCallId: String
         }
         return try await send(

@@ -73,35 +73,30 @@ final class WellPhoneUITests: XCTestCase {
         composer.typeText("帮我规划2026年10月20日上海一日旅行，节奏轻松，喜欢博物馆和咖啡")
         app.buttons["arrow.up"].tap()
 
-        let confirm = app.buttons["确认开始"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 120), "没有收到旅行任务确认卡片")
-        XCTAssertTrue(app.staticTexts["后台任务"].exists)
-        capture("02-confirmation-card", app: app)
-        confirm.tap()
-
         let boundedProgress = app.staticTexts.matching(
             NSPredicate(format: "label MATCHES %@", ".*第 [0-9]+/12 轮.*")
         ).firstMatch
         XCTAssertTrue(boundedProgress.waitForExistence(timeout: 90), "没有显示带 12 轮上限的进度")
-        capture("03-running-progress", app: app)
+        XCTAssertFalse(app.buttons["确认开始"].exists, "旅行任务不应再次要求确认")
+        capture("02-running-progress", app: app)
 
         XCUIDevice.shared.press(.home)
         sleep(5)
         app.activate()
         XCTAssertTrue(app.staticTexts["后台任务"].waitForExistence(timeout: 15))
 
-        let completion = app.staticTexts["任务完成"]
+        let completion = app.staticTexts["已完成"].firstMatch
         XCTAssertTrue(completion.waitForExistence(timeout: 300), "旅行任务没有在五分钟内完成")
-        capture("04-completion-banner", app: app)
+        capture("03-compact-completion-card", app: app)
 
         let calendarAlert = app.alerts["是否添加到 Apple 日历？"]
         XCTAssertTrue(calendarAlert.waitForExistence(timeout: 15), "完成后没有显示日历选择弹窗")
         XCTAssertTrue(calendarAlert.buttons["暂不"].exists)
         XCTAssertTrue(calendarAlert.buttons["添加到日历"].exists)
-        capture("05-calendar-choice", app: app)
+        capture("04-calendar-choice", app: app)
         calendarAlert.buttons["暂不"].tap()
 
-        XCTAssertFalse(app.staticTexts["后台任务"].exists, "完成后聊天中的后台任务卡片仍然存在")
+        XCTAssertTrue(completion.exists, "完成后应保留精简的任务完成卡片")
         XCTAssertTrue(
             app.staticTexts.matching(
                 NSPredicate(format: "label CONTAINS %@", "已完成，共规划 1 天")
@@ -134,13 +129,13 @@ final class WellPhoneUITests: XCTestCase {
         let addFromDetail = app.buttons["添加到 Apple 日历"]
         scrollToElement(addFromDetail, in: app)
         XCTAssertTrue(addFromDetail.isHittable, "任务详情没有提供再次添加日历的入口")
-        capture("06-task-detail", app: app)
+        capture("05-task-detail", app: app)
 
         addFromDetail.tap()
         allowCalendarAccessIfNeeded(in: app)
         let imported = app.staticTexts["已添加到 Apple 日历"]
         XCTAssertTrue(imported.waitForExistence(timeout: 30), "行程没有成功写入 Apple 日历")
-        capture("07-calendar-imported", app: app)
+        capture("06-calendar-imported", app: app)
     }
 
     @MainActor

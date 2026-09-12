@@ -12,13 +12,6 @@ final class TaskController {
         var id: UUID { taskID }
     }
 
-    struct CompletionBanner: Identifiable, Equatable {
-        let id = UUID()
-        let taskID: UUID
-        let title: String
-        let summary: String
-    }
-
     struct AssistantFollowUp: Equatable, Sendable {
         let conversationID: UUID
         let toolCallID: String
@@ -27,7 +20,6 @@ final class TaskController {
 
     var tasks: [AgentTask] = []
     var calendarImportPrompt: CalendarImportPrompt?
-    var completionBanner: CompletionBanner?
     let modelContext: ModelContext
     let runtime: AgentRuntime
     let notifier: any TaskNotifying
@@ -41,8 +33,6 @@ final class TaskController {
     private var recoveringTaskIDs: Set<UUID> = []
     @ObservationIgnored
     var serverPollingTasks: [UUID: Task<Void, Never>] = [:]
-    @ObservationIgnored
-    var completionBannerTask: Task<Void, Never>?
     @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
@@ -227,16 +217,22 @@ final class TaskController {
         return task
     }
 
-    func confirmTask(taskID: UUID) async {
+    func startTask(taskID: UUID) async {
         guard let task = task(id: taskID),
-              task.status == .waitingForConfirmation else { return }
+              task.status == .created || task.status == .waitingForConfirmation else { return }
         if task.executionLocation == .server {
-            await confirmServerTask(task)
+            if task.status == .waitingForConfirmation {
+                await confirmServerTask(task)
+            } else {
+                startPollingServerTask(task)
+            }
             return
         }
 
         do {
-            completeStep(1, for: task)
+            if task.status == .waitingForConfirmation {
+                completeStep(1, for: task)
+            }
             startStep(2, for: task)
             task.status = .running
             task.phase = .executing
@@ -256,6 +252,10 @@ final class TaskController {
         } catch {
             await fail(task, error: error)
         }
+    }
+
+    func confirmTask(taskID: UUID) async {
+        await startTask(taskID: taskID)
     }
 
     func recoverInterruptedTasks() async {
@@ -328,11 +328,13 @@ final class TaskController {
             await cancelServerTask(task)
             return
         }
-        if task.status == .waitingForConfirmation {
-            completeStep(1, for: task)
+        if task.status == .waitingForConfirmation || task.status == .created {
+            if task.status == .waitingForConfirmation {
+                completeStep(1, for: task)
+            }
             await finishCancellation(
                 task,
-                summary: "你取消了这次操作，未执行任何系统写入。"
+                summary: "任务已停止，未执行任何系统写入。"
             )
             return
         }

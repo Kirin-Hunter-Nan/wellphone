@@ -20,7 +20,7 @@ class ServerTaskCreate(BaseModel):
     capability: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=1, max_length=300)
     input: dict[str, object]
-    requires_confirmation: bool = Field(default=True, alias="requiresConfirmation")
+    requires_confirmation: bool = Field(default=False, alias="requiresConfirmation")
     tool_call_id: str | None = Field(default=None, alias="toolCallId", min_length=1)
 
 

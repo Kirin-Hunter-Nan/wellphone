@@ -1,5 +1,8 @@
 """Qwen provider transport and response validation."""
 
+from collections.abc import Callable
+from datetime import datetime, timezone
+
 import httpx
 
 from app.api.protocol import ChatRequest, ToolResultSubmission
@@ -26,12 +29,14 @@ class QwenProvider:
         *,
         client: httpx.AsyncClient | None = None,
         catalog: ModelToolCatalog | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._settings = settings
         self._client = client or httpx.AsyncClient(timeout=120)
         self._owns_client = client is None
         self._catalog = catalog or ModelToolCatalog()
         self._intents = IntentResolver(self._catalog)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def open_reply(
         self,
@@ -39,7 +44,8 @@ class QwenProvider:
         *,
         on_tool_call: ToolCallContextSink | None = None,
     ) -> QwenReplyStream:
-        messages = initial_messages(request)
+        request_time = self._clock()
+        messages = initial_messages(request, request_time=request_time)
         upstream_request = self._client.build_request(
             "POST",
             self._endpoint,
@@ -50,7 +56,15 @@ class QwenProvider:
         if "text/event-stream" not in response.headers.get("content-type", ""):
             await response.aclose()
             raise UpstreamError(502, "Qwen returned a non-streaming response")
-        return QwenReplyStream(response, self._intents, messages, on_tool_call)
+        return QwenReplyStream(
+            response,
+            self._intents,
+            messages,
+            on_tool_call,
+            user_text=_user_text(request),
+            reference_time=request_time,
+            time_zone=request.device_context.time_zone,
+        )
 
     async def continue_reply(
         self,
@@ -111,3 +125,12 @@ class QwenProvider:
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _user_text(request: ChatRequest) -> str:
+    content = request.messages[-1].content
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        part.text for part in content if getattr(part, "type", None) == "text"
+    )
