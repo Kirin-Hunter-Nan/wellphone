@@ -96,7 +96,10 @@ class ModelToolCatalog:
                 TravelPlanArguments,
                 "Start a multi-step travel planning task after the user has supplied a "
                 "destination and exact start and end dates. Ask for missing dates before "
-                "using this tool. The app will request confirmation before starting.",
+                "using this tool. Origin is optional: do not ask for it unless the user "
+                "explicitly requests intercity or round-trip transportation. Without an "
+                "origin, plan only transportation within the destination. The app will "
+                "request confirmation before starting.",
                 "server",
             ),
         }

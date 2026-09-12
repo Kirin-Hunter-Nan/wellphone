@@ -54,3 +54,17 @@ def test_model_schema_matches_shared_capability_contract() -> None:
     assert catalog_schema["required"] == shared_schema["required"]
     assert set(catalog_schema["properties"]) == set(shared_schema["properties"])
     assert catalog_schema["properties"]["dueAt"]["format"] == "date-time"
+
+
+def test_travel_origin_is_optional_and_does_not_block_destination_local_planning() -> None:
+    travel_tool = next(
+        definition["function"]
+        for definition in ModelToolCatalog().model_definitions()
+        if definition["function"]["name"] == "travel_plan"
+    )
+
+    assert set(travel_tool["parameters"]["required"]) == {
+        "destination", "startDate", "endDate"
+    }
+    assert "Origin is optional" in travel_tool["description"]
+    assert "plan only transportation within the destination" in travel_tool["description"]

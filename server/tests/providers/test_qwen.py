@@ -75,6 +75,8 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     assert upstream_body["tools"][0]["function"]["name"] == "reminder_create"
     assert "Asia/Shanghai" in upstream_body["messages"][0]["content"]
     assert "never infer, recalculate" in upstream_body["messages"][0]["content"]
+    assert "The trip origin is optional" in upstream_body["messages"][0]["content"]
+    assert "Never ask for an origin merely" in upstream_body["messages"][0]["content"]
 
     assert [event["type"] for event in events] == [
         "response.started",
