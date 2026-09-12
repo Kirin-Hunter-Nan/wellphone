@@ -5,7 +5,7 @@ final class ReminderCreateTool: AgentTool {
     let descriptor = AgentToolDescriptor(
         capability: "reminder.create",
         riskLevel: .write,
-        confirmationPolicy: .always,
+        confirmationPolicy: .never,
         supportsRetry: true
     )
 
@@ -29,7 +29,7 @@ final class ReminderCreateTool: AgentTool {
             targetName: draft.listName,
             stepTitles: AgentToolStepTitles(
                 validation: "理解并校验提醒内容",
-                confirmation: "等待你的确认",
+                confirmation: "已确认用户指令",
                 execution: "写入系统提醒事项",
                 verification: "回读并验证结果"
             )

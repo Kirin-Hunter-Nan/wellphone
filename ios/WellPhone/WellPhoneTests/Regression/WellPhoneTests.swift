@@ -223,7 +223,7 @@ struct WellPhoneTests {
             Issue.record("Expected the assistant message to link an inline task")
             return
         }
-        #expect(taskController.task(id: relatedTaskID)?.status == .waitingForConfirmation)
+        #expect(taskController.task(id: relatedTaskID)?.status == .completed)
     }
 
     @Test @MainActor
@@ -252,7 +252,7 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func reminderTaskRequiresConfirmationThenCompletesAfterVerification() async throws {
+    func reminderTaskStartsImmediatelyWhenDispatchedAndCompletesAfterVerification() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let executor = FakeReminderExecutor()
@@ -277,20 +277,19 @@ struct WellPhoneTests {
             conversationID: UUID(),
             sourceMessageID: UUID()
         )
-        #expect(task.status == .waitingForConfirmation)
+        #expect(task.status == .created)
         #expect(task.toolCallID == "call_1")
         #expect(executor.createCount == 0)
-        #expect(notifier.notifications.map(\.kind) == [.authorizationRequired])
-        #expect(notifier.notifications.first?.taskID == task.id)
+        #expect(notifier.notifications.isEmpty)
 
-        await controller.confirmTask(taskID: task.id)
+        await controller.startTask(taskID: task.id)
 
         #expect(executor.createCount == 1)
         #expect(executor.verifyCount == 1)
         #expect(task.status == .completed)
         #expect(task.phase == .completed)
         #expect(controller.steps(for: task).allSatisfy { $0.status == .completed })
-        #expect(notifier.notifications.map(\.kind) == [.authorizationRequired, .completed])
+        #expect(notifier.notifications.map(\.kind) == [.completed])
         #expect(notifier.notifications.last?.body == task.resultSummary)
         #expect(task.resultReportState == .delivered)
         let reports = await resultReporter.reports
@@ -318,7 +317,7 @@ struct WellPhoneTests {
         }
         #expect(checkpoints.map(\.checkpoint.revision) == [1, 2, 3, 4, 5])
         #expect(checkpoints.map(\.checkpoint.phase) == [
-            .waitingForConfirmation,
+            .planning,
             .executing,
             .executing,
             .verifying,
@@ -626,12 +625,77 @@ struct WellPhoneTests {
         ))
 
         #expect(request.descriptor.capability == "reminder.create")
-        #expect(request.descriptor.confirmationPolicy == .always)
+        #expect(request.descriptor.confirmationPolicy == .never)
         #expect(request.descriptor.supportsRetry == true)
         #expect(request.task.stepTitles.execution == "写入系统提醒事项")
         #expect(request.task.stepTitles.verification == "回读并验证结果")
         #expect(executor.createCount == 0)
         #expect(executor.verifyCount == 0)
+    }
+
+    @Test @MainActor
+    func travelCalendarImportRequiresExplicitRequestFlag() throws {
+        let container = try makeContainer()
+        let controller = TaskController(modelContext: container.mainContext)
+        let conversationID = UUID()
+        let implicit = AgentTask(
+            conversationID: conversationID,
+            title: "上海旅行",
+            capability: "travel.plan",
+            executionLocation: .server,
+            argumentsJSON: #"{"destination":"上海","addToCalendar":false}"#
+        )
+        let explicit = AgentTask(
+            conversationID: conversationID,
+            title: "上海旅行并添加日历",
+            capability: "travel.plan",
+            executionLocation: .server,
+            argumentsJSON: #"{"destination":"上海","addToCalendar":true}"#
+        )
+
+        #expect(!controller.calendarWasExplicitlyRequested(for: implicit))
+        #expect(controller.calendarWasExplicitlyRequested(for: explicit))
+    }
+
+    @Test @MainActor
+    func explicitTravelCalendarRequestImportsBeforeReportingCompletion() async throws {
+        let container = try makeContainer()
+        let calendarImporter = RecordingTravelCalendarImporter()
+        let serverClient = ImmediatelyCompletingTravelServerClient()
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: FakeReminderExecutor()),
+            notifier: DisabledTaskNotifier(),
+            resultReporter: DisabledToolResultReporter(),
+            checkpointReporter: DisabledTaskCheckpointReporter(),
+            serverTaskClient: serverClient,
+            calendarImporter: calendarImporter
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_travel_calendar",
+                capability: "travel.plan",
+                arguments: #"{"destination":"上海","startDate":"2026-10-01","endDate":"2026-10-01","addToCalendar":true}"#,
+                executionLocation: .server
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.startTask(taskID: task.id)
+        for _ in 0..<1_000 {
+            if task.status == .completed, calendarImporter.importCount == 1 { break }
+            await Task.yield()
+        }
+
+        #expect(task.status == .completed)
+        #expect(calendarImporter.importCount == 1)
+        #expect(controller.calendarImportPrompt == nil)
+        #expect(task.resultSummary?.contains("已添加到 Apple 日历") == true)
+        let calendarArtifact = controller.artifacts(for: task).first {
+            $0.contentType == "application/vnd.wellphone.calendar-events+json"
+        }
+        #expect(calendarArtifact?.storageReference == "eventkit:event-1")
     }
 
     @Test @MainActor
@@ -821,7 +885,7 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
-    func appRestartKeepsTaskWaitingForConfirmation() async throws {
+    func appRestartKeepsPreparedTaskReadyToStart() async throws {
         let container = try makeContainer()
         let executor = FakeReminderExecutor()
         let initialController = TaskController(
@@ -844,12 +908,12 @@ struct WellPhoneTests {
         )
         await restoredController.recoverInterruptedTasks()
 
-        #expect(task.status == .waitingForConfirmation)
-        #expect(task.phase == .waitingForConfirmation)
+        #expect(task.status == .created)
+        #expect(task.phase == .planning)
         #expect(executor.recoverCount == 0)
         #expect(executor.createCount == 0)
         #expect(executor.verifyCount == 0)
-        #expect(restoredController.steps(for: task)[1].status == .running)
+        #expect(restoredController.steps(for: task)[1].status == .completed)
     }
 
     @Test @MainActor
@@ -1213,6 +1277,119 @@ private actor ReplyingToolResultReporter: ToolResultReporting {
             continuationStatus: .completed,
             assistantMessage: "提醒事项已经成功创建。",
             protocolVersion: "1.0"
+        )
+    }
+}
+
+@MainActor
+private final class RecordingTravelCalendarImporter: TravelCalendarImporting {
+    private(set) var importCount = 0
+
+    func importEvents(payload: Data) async throws -> [String] {
+        _ = payload
+        importCount += 1
+        return ["event-1"]
+    }
+}
+
+private actor ImmediatelyCompletingTravelServerClient: ServerTaskServing {
+    private let taskID = UUID()
+    private var conversationID = UUID()
+    private var title = "规划上海旅行"
+
+    func create(
+        conversationID: UUID,
+        toolCallID: String,
+        capability: String,
+        title: String,
+        input: [String: JSONValue]
+    ) async throws -> ServerTaskSnapshot {
+        _ = toolCallID
+        _ = input
+        self.conversationID = conversationID
+        self.title = title
+        return snapshot(
+            capability: capability,
+            status: "queued",
+            phase: "queued",
+            progress: 0,
+            detail: "等待执行",
+            resultSummary: nil,
+            artifacts: []
+        )
+    }
+
+    func confirm(taskID: UUID) async throws -> ServerTaskSnapshot {
+        _ = taskID
+        return snapshot(
+            capability: "travel.plan",
+            status: "queued",
+            phase: "queued",
+            progress: 0,
+            detail: "等待执行",
+            resultSummary: nil,
+            artifacts: []
+        )
+    }
+
+    func cancel(taskID: UUID) async throws -> ServerTaskSnapshot {
+        _ = taskID
+        return snapshot(
+            capability: "travel.plan",
+            status: "cancelled",
+            phase: "cancelled",
+            progress: 0,
+            detail: "任务已取消",
+            resultSummary: nil,
+            artifacts: []
+        )
+    }
+
+    func get(taskID: UUID) async throws -> ServerTaskSnapshot {
+        _ = taskID
+        return snapshot(
+            capability: "travel.plan",
+            status: "completed",
+            phase: "completed",
+            progress: 1,
+            detail: "上海一日旅行已完成。",
+            resultSummary: "上海一日旅行已完成。",
+            artifacts: [ServerTaskSnapshot.Artifact(
+                id: UUID(),
+                kind: "json",
+                title: "上海一日旅行（日历事件）",
+                contentType: "application/vnd.wellphone.calendar-events+json",
+                payload: .object(["events": .array([])]),
+                storageReference: nil,
+                createdAt: Date()
+            )]
+        )
+    }
+
+    private func snapshot(
+        capability: String,
+        status: String,
+        phase: String,
+        progress: Double,
+        detail: String,
+        resultSummary: String?,
+        artifacts: [ServerTaskSnapshot.Artifact]
+    ) -> ServerTaskSnapshot {
+        ServerTaskSnapshot(
+            id: taskID,
+            conversationId: conversationID,
+            capability: capability,
+            title: title,
+            status: status,
+            phase: phase,
+            progress: progress,
+            detail: detail,
+            resultSummary: resultSummary,
+            errorMessage: nil,
+            attemptCount: status == "completed" ? 1 : 0,
+            updatedAt: Date(),
+            steps: [],
+            artifacts: artifacts
         )
     }
 }

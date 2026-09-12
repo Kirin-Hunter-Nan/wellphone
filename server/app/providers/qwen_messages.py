@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import json
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.api.protocol import ChatRequest, ToolResultSubmission
 from app.providers.base import ProviderToolCallContext
@@ -9,16 +10,30 @@ from app.intents.resolver import IntentResolver
 from app.tools.catalog import ModelToolCatalog
 
 
-def initial_messages(request: ChatRequest) -> list[dict[str, object]]:
-    request_time = datetime.now(timezone.utc).isoformat()
+def initial_messages(
+    request: ChatRequest,
+    *,
+    request_time: datetime | None = None,
+) -> list[dict[str, object]]:
+    current_time = request_time or datetime.now(timezone.utc)
+    request_time_text = current_time.isoformat()
     time_zone = request.device_context.time_zone
+    try:
+        local_time = current_time.astimezone(ZoneInfo(time_zone))
+        local_context = (
+            f"The user's local date and time is {local_time.isoformat()}, "
+            f"and the local weekday is {local_time.strftime('%A')}. "
+        )
+    except ZoneInfoNotFoundError:
+        local_context = ""
     return [
         {
             "role": "system",
             "content": (
                 "You are WellPhone, an iPhone assistant. "
-                f"The current time is {request_time}. "
+                f"The current time is {request_time_text}. "
                 f"The user's IANA time zone is {time_zone}. "
+                f"{local_context}"
                 "For each user turn, choose exactly one outcome. Reply normally for "
                 "conversation or information requests. When the user intends to run a "
                 "supported action but required information is missing or ambiguous, call "
@@ -26,11 +41,16 @@ def initial_messages(request: ChatRequest) -> list[dict[str, object]]:
                 "tool only when every required argument is known. "
                 "Use reminder_create only when the user explicitly asks to create "
                 "a reminder. Resolve relative dates to an absolute ISO 8601 "
-                "date-time with an explicit UTC offset. Never claim a reminder was "
-                "created: the iPhone app will ask for confirmation and report the result. "
+                "date-time with an explicit UTC offset. For Chinese expressions such as "
+                "下周六, use the named weekday in the next Monday-to-Sunday calendar week "
+                "and verify that dueAt falls on that weekday. Never claim a reminder was "
+                "created before the iPhone app reports the result. An explicit reminder "
+                "request authorizes immediate creation; do not ask for confirmation again. "
                 "Use travel_plan when the user asks you to create a travel itinerary and "
-                "both exact start and end dates are known. It runs as a confirmed background "
-                "task, so never claim the itinerary is complete before its Tool result. "
+                "both exact start and end dates are known. It starts immediately as a background "
+                "task, so never claim the itinerary is complete before its Tool result. Set "
+                "addToCalendar=true only if the user explicitly asks to add the resulting "
+                "itinerary to their calendar; otherwise leave it false. "
                 "After receiving a Tool result, describe the outcome using only facts "
                 "explicitly present in result or error. If result.payload includes "
                 "dueAt and timeZone, reproduce them as supplied; never infer, recalculate, or "

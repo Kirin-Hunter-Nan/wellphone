@@ -16,6 +16,7 @@ class TravelPlanInput(BaseModel):
     pace: Literal["relaxed", "balanced", "intensive"] = "balanced"
     travelers: str | None = Field(default=None, max_length=300)
     notes: str | None = Field(default=None, max_length=2_000)
+    add_to_calendar: bool = Field(default=False, alias="addToCalendar")
 
     @field_validator("destination")
     @classmethod

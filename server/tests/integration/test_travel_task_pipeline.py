@@ -84,7 +84,7 @@ def turn(call_id: str, name: str, arguments: dict[str, object]) -> LoopModelTurn
     )
 
 
-async def test_confirmed_travel_task_completes_full_pipeline_once(
+async def test_travel_task_starts_immediately_and_completes_full_pipeline_once(
     anyio_backend,
 ) -> None:
     store = InMemoryServerTaskStore()
@@ -116,13 +116,11 @@ async def test_confirmed_travel_task_completes_full_pipeline_once(
                 "endDate": "2026-10-01",
                 "pace": "relaxed",
             },
-            requiresConfirmation=True,
+            requiresConfirmation=False,
             toolCallId="call-travel",
         ),
     )
 
-    assert await runner.run_once() is False
-    await store.confirm(created.id)
     assert await runner.run_once() is True
     assert await runner.run_once() is False
 

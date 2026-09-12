@@ -1,5 +1,6 @@
 """Qwen provider adapter tests."""
 
+from datetime import datetime, timezone
 import json
 
 import httpx
@@ -95,6 +96,63 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     assert captured_contexts[0].capability == "reminder.create"
     assert captured_contexts[0].provider == "qwen"
     assert captured_contexts[0].state["toolName"] == "reminder_create"
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_corrects_next_saturday_before_requesting_device_tool() -> None:
+    captured_contexts: list[ProviderToolCallContext] = []
+    upstream = (
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+        '"function":{"name":"reminder_create","arguments":"{\\"title\\":'
+        '\\"要完成这个测试\\",\\"dueAt\\":'
+        '\\"2026-09-20T10:00:00+08:00\\"}"}}]}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=upstream,
+        )
+
+    async def capture_context(context: ProviderToolCallContext) -> None:
+        captured_contexts.append(context)
+
+    request = ChatRequest.model_validate({
+        "requestId": "req_next_saturday",
+        "protocolVersion": "1.0",
+        "messages": [{
+            "role": "user",
+            "content": "下周六早上10:00提醒我要完成这个测试。",
+        }],
+        "deviceContext": {
+            "locale": "zh-CN",
+            "timeZone": "Asia/Shanghai",
+            "capabilitySetVersion": "ios-v1",
+        },
+    })
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = QwenProvider(
+        make_settings(),
+        client=client,
+        clock=lambda: datetime(2026, 9, 12, 4, 0, tzinfo=timezone.utc),
+    )
+
+    stream = await provider.open_reply(request, on_tool_call=capture_context)
+    encoded = "".join([event async for event in stream.events()])
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in encoded.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert events[1]["type"] == "tool.requested"
+    assert events[1]["arguments"]["dueAt"] == "2026-09-19T10:00:00+08:00"
+    saved_tool_call = captured_contexts[0].state["messages"][-1]["tool_calls"][0]
+    saved_arguments = json.loads(saved_tool_call["function"]["arguments"])
+    assert saved_arguments["dueAt"] == "2026-09-19T10:00:00+08:00"
     await client.aclose()
 
 

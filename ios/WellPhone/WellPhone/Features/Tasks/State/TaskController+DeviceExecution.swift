@@ -218,7 +218,6 @@ extension TaskController {
             title: "任务已完成",
             body: verified.summary
         ))
-        showCompletionBanner(for: task, offerCalendarImport: false)
         queueResult(for: task)
         if reportResultImmediately {
             await reportResult(for: task)

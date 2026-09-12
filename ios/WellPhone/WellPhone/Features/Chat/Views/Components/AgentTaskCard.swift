@@ -5,6 +5,35 @@ struct AgentTaskCard: View {
     @Bindable var task: AgentTask
 
     var body: some View {
+        if task.status == .completed {
+            completedCard
+        } else {
+            activeCard
+        }
+    }
+
+    private var completedCard: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(task.title)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text("已完成")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.green.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 92)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("任务已完成：\(task.title)")
+    }
+
+    private var activeCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: statusIcon)
@@ -55,8 +84,12 @@ struct AgentTaskCard: View {
                     .buttonStyle(.borderedProminent)
                 }
             } else if task.status.isActive {
-                ProgressView(task.phase.title)
-                    .font(.subheadline)
+                ProgressView(value: task.displayedProgress) {
+                    Text(task.phase.title)
+                } currentValueLabel: {
+                    Text(task.progressLabel)
+                }
+                .font(.subheadline)
                 if task.phase == .executing {
                     if task.cancellationRequestedAt == nil {
                         Button("安全停止", role: .destructive) {

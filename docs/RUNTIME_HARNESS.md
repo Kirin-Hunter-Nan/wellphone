@@ -2,11 +2,11 @@
 
 ## 边界
 
-聊天入口现在通过 provider-neutral `IntentResolver` 将每轮模型决策统一为三种结果：`chat`、`clarify` 或 `action`。它仍只发起一次模型请求：普通回答产生 `chat`，缺少执行参数时模型调用内部 `intent_clarify` 并产生 `clarify`，参数完整的业务 Tool Call 产生 `action`。只有 `action` 会被标准化为 capability 并进入确认与执行链；意图层不直接执行任何副作用。
+聊天入口现在通过 provider-neutral `IntentResolver` 将每轮模型决策统一为三种结果：`chat`、`clarify` 或 `action`。它仍只发起一次模型请求：普通回答产生 `chat`，缺少执行参数时模型调用内部 `intent_clarify` 并产生 `clarify`，参数完整的业务 Tool Call 产生 `action`。只有 `action` 会被标准化为 capability 并进入执行链；意图层不直接执行任何副作用。
 
-聊天模型只请求业务能力；短任务由客户端 Runtime Harness 执行，长任务则由服务端统一 Agent Loop 在确认后自主调用白名单原子 Tool。两条链路都由确定性边界负责确认、参数校验、真实执行和结果验证。
+聊天模型只请求业务能力；短任务由客户端 Runtime Harness 执行，长任务则由服务端统一 Agent Loop 立即开始并自主调用白名单原子 Tool。用户明确的业务指令就是当前任务的操作授权，两条链路仍由确定性边界负责参数校验、真实执行和结果验证；缺少必要信息时必须先澄清，iOS 系统权限请求也不会被绕过。
 
-`reminder_create` 只存在于 Qwen Provider 内部，并在 Python 服务端被转换为平台无关 capability `reminder.create`。Swift 客户端不识别任何模型厂商的 Tool 名称。参数解析、用户确认、EventKit 写入和回读验证不是独立的模型 Tool。
+`reminder_create` 只存在于 Qwen Provider 内部，并在 Python 服务端被转换为平台无关 capability `reminder.create`。Swift 客户端不识别任何模型厂商的 Tool 名称。参数解析、显式指令授权、EventKit 写入和回读验证不是独立的模型 Tool。
 
 `travel_plan` 同样只是聊天阶段的意图入口，并映射为 `travel.plan` 长任务。旅行规划本身没有专属 Loop：worker 注册唯一的通用 `AgentLoopTaskHandler`，其内部使用 LangGraph `StateGraph` 的条件边在模型节点、Tool 节点与结束状态之间路由。`travel.plan` Profile 只提供系统提示词、允许使用的 Tool、循环预算、进度步骤和最终结果构建器。目前的原子 Tool 是 `places_search` 与 `itinerary_submit`；后续能力通过新增或复用 Tool、再增加轻量 Profile 接入，不需要复制一套业务循环。
 
@@ -15,7 +15,7 @@
 旅行 Profile 最多允许 12 次模型决策，任务进度展示当前轮次与上限。LangGraph 的 recursion limit 提供第二层循环保护；同一 Tool 错误连续出现三次时通过条件边提前结束，并被标记为不可重试失败。Qwen 若把应为对象的顶层 Tool 参数编码成嵌套 JSON 字符串，Registry 只在首次 Schema 校验失败后尝试解包并重新校验。
 
 ```text
-Chat intent Tool -> capability -> user confirmation -> server task queue
+Chat intent Tool -> capability -> immediate server task queue
   -> Generic Agent Loop
        -> Task Profile (prompt / allowed tools / budgets / finalizer)
        -> Model decision
@@ -35,7 +35,7 @@ Qwen / future provider
   -> iOS system capability
 ```
 
-Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式响应解析，以及厂商 Tool 名称到 capability 的映射。Swift 客户端负责权限、用户确认、本地任务状态、系统 API 调用与结果验证。模型供应商变化不应要求修改 Runtime Harness。
+Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式响应解析，以及厂商 Tool 名称到 capability 的映射。Swift 客户端负责系统权限、本地任务状态、系统 API 调用与结果验证。模型供应商变化不应要求修改 Runtime Harness。
 
 每轮聊天请求也受运行外壳保护。iOS 将稳定的 `requestId` 保存到发起该轮回复的用户消息中，重试时复用；Python 服务端以 PostgreSQL 租约领取请求并保存完整 WellPhone SSE 事件。断流清理独立于 HTTP 请求的取消域，短暂并发由客户端按 `Retry-After` 自动重试。完成后的重复请求只回放原始事件，不重复访问模型。回放中的 Tool Call 在客户端按 `(conversationID, toolCallID)` 去重，因此不会产生第二张任务卡片。
 
@@ -45,9 +45,9 @@ PostgreSQL 中的 chat request 同时是服务端权威会话历史。服务端�
 
 结果先在 SwiftData 标记为待同步，再由 PostgreSQL 使用 `(conversation_id, tool_call_id)` 幂等接收。最终模型回复也绑定到同一个键：网络重试复用已保存的回复，不重复调用模型，也不在聊天窗口重复插入消息。回传或续接失败不得改变设备端已经验证的真实执行结果。
 
-任务运行状态使用独立的 checkpoint 通道同步。SwiftData 为每个任务维护单调递增的 `revision`；等待确认、每次执行尝试、计划重试、取消请求、验证以及完成、失败或取消等关键转换都会生成检查点。检查点包含执行尝试次数、下次重试时间、执行 Deadline、最近一次执行错误和取消请求时间。Python 服务端将每个版本写入 PostgreSQL 事件日志，并维护一份只接受更高版本的最新快照。旧版本重放不会覆盖新状态，同一版本或 `requestId` 携带不同内容会被拒绝。
+任务运行状态使用独立的 checkpoint 通道同步。SwiftData 为每个任务维护单调递增的 `revision`；任务创建、每次执行尝试、计划重试、取消请求、验证以及完成、失败或取消等关键转换都会生成检查点。检查点包含执行尝试次数、下次重试时间、执行 Deadline、最近一次执行错误和取消请求时间。Python 服务端将每个版本写入 PostgreSQL 事件日志，并维护一份只接受更高版本的最新快照。旧版本重放不会覆盖新状态，同一版本或 `requestId` 携带不同内容会被拒绝。
 
-checkpoint 上报不属于 EventKit 写入事务，网络失败不得阻塞或回滚设备端执行。客户端只持久化最新待上报快照，App 下次启动时继续补报；服务端允许版本跳号并记录 `gap`，因此即使中间状态未能送达，也能恢复到设备已确认的最新状态。用户确认和 iOS 权限仍只在客户端完成，服务端检查点不获得代替用户执行系统写入的权限。
+checkpoint 上报不属于 EventKit 写入事务，网络失败不得阻塞或回滚设备端执行。客户端只持久化最新待上报快照，App 下次启动时继续补报；服务端允许版本跳号并记录 `gap`，因此即使中间状态未能送达，也能恢复到设备已验证的最新状态。iOS 系统权限仍只在客户端完成，服务端检查点不获得代替用户执行系统写入的权限。
 
 设备端 Tool 返回后，Runtime Harness 会先将 opaque execution receipt 写入 SwiftData，再进入验证阶段。App 若在验证或结果同步期间终止，重启后使用该凭证继续回读验证，不再次执行系统写入。执行凭证可能包含系统对象标识，因此留在设备端，不随 checkpoint 上传服务端。
 
@@ -67,7 +67,7 @@ checkpoint 上报不属于 EventKit 写入事务，网络失败不得阻塞或�
 Model Tool Call
   -> PostgreSQL opaque provider context
   -> WellPhone tool.requested
-  -> Swift confirm / execute / verify
+  -> Swift start / execute / verify
   -> PostgreSQL idempotent Tool Result
   -> Provider continuation
   -> verified assistant reply in chat
@@ -79,7 +79,7 @@ Model Tool Call
 AgentToolRequest
   -> ToolRegistry
   -> AgentTool.prepare
-  -> confirmation gate
+  -> explicit-request authorization
   -> AgentTool.execute
   -> AgentTool.verify
   -> verified task result
@@ -89,7 +89,7 @@ AgentToolRequest
 
 1. 未注册的 Tool 不得执行。
 2. 参数必须在创建任务前完成校验。
-3. Tool 声明需要确认时，未确认不得进入执行阶段。
+3. 当前任务的副作用必须来自用户明确指令；缺少必要信息或实质歧义时不得进入执行阶段。
 4. 模型不能直接调用内部 executor 或 verifier。
 5. 只有验证成功后，任务才能标记为 completed。
 6. 执行失败或验证失败必须保留 failed 状态，不得由模型宣称成功。
@@ -110,17 +110,17 @@ AgentTools/
     ReminderEventKitExecutor.swift    iOS 系统写入与回读
 ```
 
-`TaskController` 负责持久化任务和步骤状态，不直接依赖 EventKit。视图只调用 `prepareTool`、`confirmTask` 和 `cancelTask`，不直接持有具体 Tool。
+`TaskController` 负责持久化任务和步骤状态，不直接依赖 EventKit。聊天层在 `prepareTool` 后调用 `startTask`，视图只观察进度或调用 `cancelTask`，不直接持有具体 Tool。
 
 ## 新增 Tool
 
 新增能力时：
 
 1. 在 `AgentTools/<Capability>/` 中实现 `AgentTool`。
-2. 在客户端声明稳定的 capability、风险等级和确认策略。
+2. 在客户端声明稳定的 capability、风险等级和授权策略。
 3. 将内部系统操作封装在 executor 中，将结果核验封装在 verifier 中。
 4. 只在 `ToolRegistry` 注册设备允许调用的 capability。
 5. 在 Python Provider Adapter 中声明厂商 Tool Schema，并映射到相同 capability。
-6. 使用 Fake executor 测试未确认不执行、执行后必验证、验证失败不完成。
+6. 使用 Fake executor 测试未明确请求不执行、明确请求自动开始、执行后必验证、验证失败不完成。
 
 除非某个步骤本身对用户有独立业务意义并且可以安全、幂等地单独执行，否则不要把内部步骤拆成新的模型 Tool。

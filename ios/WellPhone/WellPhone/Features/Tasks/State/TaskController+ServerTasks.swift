@@ -33,8 +33,11 @@ extension TaskController {
             toolCallID: request.id,
             capability: request.capability,
             executionLocation: .server,
-            status: .waitingForConfirmation,
-            phase: .waitingForConfirmation,
+            status: ServerTaskStateMapper.status(snapshot.status),
+            phase: ServerTaskStateMapper.phase(
+                snapshot.phase,
+                status: ServerTaskStateMapper.status(snapshot.status)
+            ),
             progress: snapshot.progress,
             detail: snapshot.detail,
             argumentsJSON: request.arguments
@@ -43,12 +46,6 @@ extension TaskController {
         apply(snapshot, to: task)
         try modelContext.save()
         tasks.insert(task, at: 0)
-        await notifier.post(AgentTaskNotification(
-            taskID: task.id,
-            kind: .authorizationRequired,
-            title: "任务等待你的确认",
-            body: "“\(task.title)”确认后会在服务端持续运行。"
-        ))
         return task
     }
 
@@ -87,10 +84,27 @@ extension TaskController {
                 do {
                     let snapshot = try await serverTaskClient.get(taskID: taskID)
                     guard let self, let localTask = self.task(id: taskID) else { return }
+                    let wasCompleted = localTask.status == .completed
                     self.apply(snapshot, to: localTask)
                     try self.modelContext.save()
                     if !localTask.status.isActive {
-                        if localTask.status == .completed {
+                        if localTask.status == .completed, !wasCompleted {
+                            let calendarArtifactIsAvailable = self.artifacts(for: localTask)
+                                .contains {
+                                    $0.contentType
+                                        == "application/vnd.wellphone.calendar-events+json"
+                                        && $0.storageReference?.hasPrefix("eventkit:") != true
+                                }
+                            if calendarArtifactIsAvailable {
+                                if self.calendarWasExplicitlyRequested(for: localTask) {
+                                    await self.importTravelCalendar(
+                                        taskID: localTask.id,
+                                        includeOutcomeInSummary: true
+                                    )
+                                } else {
+                                    self.offerCalendarImport(for: localTask)
+                                }
+                            }
                             await self.notifier.post(AgentTaskNotification(
                                 taskID: localTask.id,
                                 kind: .completed,
@@ -113,7 +127,6 @@ extension TaskController {
     }
 
     func apply(_ snapshot: ServerTaskSnapshot, to task: AgentTask) {
-        let wasCompleted = task.status == .completed
         task.title = snapshot.title
         task.status = ServerTaskStateMapper.status(snapshot.status)
         task.phase = ServerTaskStateMapper.phase(snapshot.phase, status: task.status)
@@ -147,13 +160,6 @@ extension TaskController {
                 storageReference: item.storageReference,
                 createdAt: item.createdAt
             ))
-        }
-        let shouldOfferCalendar = snapshot.artifacts.contains {
-            $0.contentType == "application/vnd.wellphone.calendar-events+json"
-                && $0.storageReference?.hasPrefix("eventkit:") != true
-        }
-        if !wasCompleted, task.status == .completed {
-            showCompletionBanner(for: task, offerCalendarImport: shouldOfferCalendar)
         }
     }
 }

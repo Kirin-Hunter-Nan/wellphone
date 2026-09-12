@@ -72,6 +72,14 @@ class TravelPlanArguments(BaseModel):
     pace: str = Field(default="balanced", pattern="^(relaxed|balanced|intensive)$")
     travelers: str | None = Field(default=None, max_length=300)
     notes: str | None = Field(default=None, max_length=2_000)
+    add_to_calendar: bool = Field(
+        default=False,
+        alias="addToCalendar",
+        description=(
+            "True only when the user explicitly asks to add the finished itinerary "
+            "to their calendar. Do not infer consent from a travel-planning request."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_trip_length(self) -> "TravelPlanArguments":
@@ -87,7 +95,8 @@ class ModelToolCatalog:
             "reminder_create": (
                 "reminder.create",
                 ReminderCreateArguments,
-                "Prepare one Apple Reminders item for explicit user confirmation. "
+                "Create one Apple Reminders item when the user explicitly requests it. "
+                "The explicit request authorizes creation; do not ask for a second confirmation. "
                 "Do not use for general questions or discussions about reminders.",
                 "device",
             ),
@@ -96,7 +105,9 @@ class ModelToolCatalog:
                 TravelPlanArguments,
                 "Start a multi-step travel planning task after the user has supplied a "
                 "destination and exact start and end dates. Ask for missing dates before "
-                "using this tool. The app will request confirmation before starting.",
+                "using this tool. The app will start the task immediately. Set "
+                "addToCalendar=true only when the user "
+                "explicitly asks to add the finished itinerary to their calendar.",
                 "server",
             ),
         }

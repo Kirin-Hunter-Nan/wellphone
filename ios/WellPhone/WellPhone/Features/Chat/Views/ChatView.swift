@@ -72,16 +72,6 @@ struct ChatView: View {
                 }
             }
             .animation(.snappy, value: isSidebarPresented)
-            .overlay(alignment: .top) {
-                if let banner = taskController.completionBanner {
-                    TaskCompletionBannerView(banner: banner)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .zIndex(10)
-                }
-            }
-            .animation(.snappy, value: taskController.completionBanner?.id)
             .onReceive(NotificationCenter.default.publisher(for: .agentTaskNotificationOpened)) { _ in
                 isComposerFocused = false
                 isSidebarPresented = false

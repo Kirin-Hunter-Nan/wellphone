@@ -1,6 +1,7 @@
 """Decode Qwen's streaming chunks into the WellPhone SSE protocol."""
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from typing import AsyncIterator
 from uuid import uuid4
@@ -18,6 +19,7 @@ from app.api.protocol import (
 from app.providers.base import ProviderToolCallContext, ToolCallContextSink
 from app.intents.models import ActionIntent, ClarifyIntent
 from app.intents.resolver import IntentResolutionError, IntentResolver
+from app.intents.temporal import ground_relative_weekday
 
 
 @dataclass(slots=True)
@@ -48,11 +50,18 @@ class QwenReplyStream:
         intents: IntentResolver,
         provider_messages: list[dict[str, object]],
         on_tool_call: ToolCallContextSink | None,
+        *,
+        user_text: str,
+        reference_time: datetime,
+        time_zone: str,
     ) -> None:
         self._response = response
         self._intents = intents
         self._provider_messages = provider_messages
         self._on_tool_call = on_tool_call
+        self._user_text = user_text
+        self._reference_time = reference_time
+        self._time_zone = time_zone
         self._response_id = f"resp_{uuid4().hex}"
 
     async def events(self) -> AsyncIterator[str]:
@@ -156,11 +165,17 @@ class QwenReplyStream:
                     )
                     continue
                 if isinstance(resolution, ActionIntent):
+                    normalized_request = ground_relative_weekday(
+                        resolution.request,
+                        user_text=self._user_text,
+                        reference_time=self._reference_time,
+                        time_zone=self._time_zone,
+                    )
                     await self._save_tool_context(
-                        resolution.request, accumulated, assistant_text
+                        normalized_request, accumulated, assistant_text
                     )
                     yield encode_sse(
-                        tool_requested(self._response_id, resolution.request)
+                        tool_requested(self._response_id, normalized_request)
                     )
         except IntentResolutionError:
             yield self._failed(
@@ -192,7 +207,11 @@ class QwenReplyStream:
                             "type": "function",
                             "function": {
                                 "name": accumulated.name,
-                                "arguments": accumulated.arguments,
+                                "arguments": json.dumps(
+                                    normalized.arguments,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ),
                             },
                         }],
                     },
