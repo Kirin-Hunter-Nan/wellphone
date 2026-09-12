@@ -101,6 +101,9 @@ class ModelToolCatalog:
             ),
         }
 
+    def capabilities(self) -> tuple[str, ...]:
+        return tuple(tool[0] for tool in self._tools.values())
+
     def model_definitions(self) -> list[dict[str, object]]:
         definitions: list[dict[str, object]] = []
         for model_name, (_, arguments_type, description, _) in self._tools.items():

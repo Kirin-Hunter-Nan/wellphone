@@ -5,6 +5,7 @@ import json
 
 from app.api.protocol import ChatRequest, ToolResultSubmission
 from app.providers.base import ProviderToolCallContext
+from app.intents.resolver import IntentResolver
 from app.tools.catalog import ModelToolCatalog
 
 
@@ -18,6 +19,11 @@ def initial_messages(request: ChatRequest) -> list[dict[str, object]]:
                 "You are WellPhone, an iPhone assistant. "
                 f"The current time is {request_time}. "
                 f"The user's IANA time zone is {time_zone}. "
+                "For each user turn, choose exactly one outcome. Reply normally for "
+                "conversation or information requests. When the user intends to run a "
+                "supported action but required information is missing or ambiguous, call "
+                "intent_clarify instead of asking in ordinary assistant text. Call an action "
+                "tool only when every required argument is known. "
                 "Use reminder_create only when the user explicitly asks to create "
                 "a reminder. Resolve relative dates to an absolute ISO 8601 "
                 "date-time with an explicit UTC offset. Never claim a reminder was "
@@ -38,12 +44,12 @@ def initial_messages(request: ChatRequest) -> list[dict[str, object]]:
 def streaming_payload(
     model: str,
     messages: list[dict[str, object]],
-    catalog: ModelToolCatalog,
+    intents: IntentResolver,
 ) -> dict[str, object]:
     return {
         "model": model,
         "messages": messages,
-        "tools": catalog.model_definitions(),
+        "tools": intents.model_definitions(),
         "tool_choice": "auto",
         "parallel_tool_calls": False,
         "tool_stream": False,

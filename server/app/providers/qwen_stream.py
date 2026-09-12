@@ -16,7 +16,8 @@ from app.api.protocol import (
     tool_requested,
 )
 from app.providers.base import ProviderToolCallContext, ToolCallContextSink
-from app.tools.catalog import ModelToolCatalog, ToolCatalogError
+from app.intents.models import ActionIntent, ClarifyIntent
+from app.intents.resolver import IntentResolutionError, IntentResolver
 
 
 @dataclass(slots=True)
@@ -44,12 +45,12 @@ class QwenReplyStream:
     def __init__(
         self,
         response: httpx.Response,
-        catalog: ModelToolCatalog,
+        intents: IntentResolver,
         provider_messages: list[dict[str, object]],
         on_tool_call: ToolCallContextSink | None,
     ) -> None:
         self._response = response
-        self._catalog = catalog
+        self._intents = intents
         self._provider_messages = provider_messages
         self._on_tool_call = on_tool_call
         self._response_id = f"resp_{uuid4().hex}"
@@ -141,15 +142,27 @@ class QwenReplyStream:
             )
             return
         try:
+            if not completed_calls:
+                self._intents.resolve_chat(assistant_text)
             for accumulated in completed_calls:
-                normalized = self._catalog.normalize(
+                resolution = self._intents.resolve_tool(
                     model_name=accumulated.name,
                     tool_call_id=accumulated.tool_call_id or f"call_{uuid4().hex}",
                     arguments_json=accumulated.arguments,
                 )
-                await self._save_tool_context(normalized, accumulated, assistant_text)
-                yield encode_sse(tool_requested(self._response_id, normalized))
-        except ToolCatalogError:
+                if isinstance(resolution, ClarifyIntent):
+                    yield encode_sse(
+                        assistant_delta(self._response_id, resolution.question)
+                    )
+                    continue
+                if isinstance(resolution, ActionIntent):
+                    await self._save_tool_context(
+                        resolution.request, accumulated, assistant_text
+                    )
+                    yield encode_sse(
+                        tool_requested(self._response_id, resolution.request)
+                    )
+        except IntentResolutionError:
             yield self._failed(
                 "invalid_tool_request", "模型返回了无法执行的工具请求。"
             )
