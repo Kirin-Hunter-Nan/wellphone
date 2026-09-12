@@ -87,9 +87,7 @@ struct ChatView: View {
             .fullScreenCover(
                 isPresented: Binding(
                     get: { voiceActivationStore.isVoiceConversationPresented },
-                    set: { presented in
-                        if !presented { voiceActivationStore.dismissActivation() }
-                    }
+                    set: { _ in }
                 )
             ) {
                 VoiceConversationView(
@@ -98,6 +96,7 @@ struct ChatView: View {
                         voiceActivationStore.dismissActivation()
                     },
                     submit: { transcript in
+                        voiceSession.cancel()
                         controller.draft = transcript
                         voiceActivationStore.dismissActivation()
                         controller.sendDraft()

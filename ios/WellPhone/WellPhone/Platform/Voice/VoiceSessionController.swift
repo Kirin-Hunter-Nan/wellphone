@@ -8,6 +8,7 @@ enum VoiceSessionPhase: Equatable {
     case idle
     case preparing
     case listening
+    case paused
     case finalizing
     case ready
     case failed
@@ -26,11 +27,11 @@ final class VoiceSessionController {
     }
 
     private let audioEngine = AVAudioEngine()
-    private var audioBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    private var audioBufferContinuation: AsyncStream<CapturedAudioBuffer>.Continuation?
     private var analyzerInputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
-    private var converter: AVAudioConverter?
+    private var converter: VoiceAudioBufferConverter?
     private var audioFeedTask: Task<Void, Never>?
     private var resultsTask: Task<Void, Never>?
     private var hasInstalledAudioTap = false
@@ -49,9 +50,7 @@ final class VoiceSessionController {
             guard SpeechTranscriber.isAvailable else {
                 throw VoiceSessionError.transcriptionUnavailable
             }
-            guard let locale = await SpeechTranscriber.supportedLocale(
-                equivalentTo: Locale.current
-            ) else {
+            guard let locale = await preferredRecognitionLocale() else {
                 throw VoiceSessionError.localeNotSupported
             }
 
@@ -79,11 +78,14 @@ final class VoiceSessionController {
             try configureAudioSession()
             let audioStream = try startAudioCapture()
             let inputFormat = audioEngine.inputNode.outputFormat(forBus: 0)
-            guard let converter = AVAudioConverter(from: inputFormat, to: analyzerFormat) else {
+            guard let converter = VoiceAudioBufferConverter(
+                inputFormat: inputFormat,
+                outputFormat: analyzerFormat
+            ) else {
                 throw VoiceSessionError.audioConversionFailed
             }
             self.converter = converter
-            startFeedingAudio(audioStream, analyzerFormat: analyzerFormat)
+            startFeedingAudio(audioStream, converter: converter)
             phase = .listening
         } catch {
             fail(with: error)
@@ -105,6 +107,25 @@ final class VoiceSessionController {
             phase = transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? .idle
                 : .ready
+        } catch {
+            fail(with: error)
+        }
+    }
+
+    func pauseForBackground() {
+        guard phase == .listening else { return }
+        audioEngine.pause()
+        phase = .paused
+    }
+
+    func resumeAfterBackground() async {
+        guard phase == .paused else { return }
+
+        do {
+            try configureAudioSession()
+            audioEngine.prepare()
+            try audioEngine.start()
+            phase = .listening
         } catch {
             fail(with: error)
         }
@@ -139,6 +160,21 @@ final class VoiceSessionController {
         }
     }
 
+    private func preferredRecognitionLocale() async -> Locale? {
+        let candidates = [
+            Locale(identifier: "zh-Hans-CN"),
+            Locale(identifier: "zh-CN"),
+            Locale.current,
+        ]
+
+        for candidate in candidates {
+            if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: candidate) {
+                return locale
+            }
+        }
+        return nil
+    }
+
     private func ensureModel(
         for transcriber: SpeechTranscriber,
         locale: Locale
@@ -165,8 +201,10 @@ final class VoiceSessionController {
         try audioSession.setActive(true)
     }
 
-    private func startAudioCapture() throws -> AsyncStream<AVAudioPCMBuffer> {
-        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+    private func startAudioCapture() throws -> AsyncStream<CapturedAudioBuffer> {
+        let (stream, continuation) = AsyncStream<CapturedAudioBuffer>.makeStream(
+            bufferingPolicy: .bufferingNewest(4)
+        )
         audioBufferContinuation = continuation
 
         let inputNode = audioEngine.inputNode
@@ -175,8 +213,8 @@ final class VoiceSessionController {
             onBus: 0,
             bufferSize: 4096,
             format: inputFormat
-        ) { buffer, _ in
-            continuation.yield(buffer)
+        ) { @Sendable buffer, _ in
+            continuation.yield(CapturedAudioBuffer(buffer))
         }
         hasInstalledAudioTap = true
         audioEngine.prepare()
@@ -185,18 +223,21 @@ final class VoiceSessionController {
     }
 
     private func startFeedingAudio(
-        _ audioStream: AsyncStream<AVAudioPCMBuffer>,
-        analyzerFormat: AVAudioFormat
+        _ audioStream: AsyncStream<CapturedAudioBuffer>,
+        converter: VoiceAudioBufferConverter
     ) {
-        audioFeedTask = Task { [weak self] in
+        let inputContinuation = analyzerInputContinuation
+        audioFeedTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 for await buffer in audioStream {
-                    guard let self, !Task.isCancelled else { return }
-                    let converted = try self.convert(buffer, to: analyzerFormat)
-                    self.analyzerInputContinuation?.yield(AnalyzerInput(buffer: converted))
+                    try Task.checkCancellation()
+                    let converted = try await converter.convert(buffer)
+                    inputContinuation?.yield(AnalyzerInput(buffer: converted.value))
                 }
+            } catch is CancellationError {
+                return
             } catch {
-                self?.fail(with: error)
+                await self?.fail(with: error)
             }
         }
     }
@@ -227,15 +268,61 @@ final class VoiceSessionController {
         transcript = finalizedTranscript + volatileTranscript
     }
 
-    private func convert(
-        _ buffer: AVAudioPCMBuffer,
-        to outputFormat: AVAudioFormat
-    ) throws -> AVAudioPCMBuffer {
-        guard let converter else {
-            throw VoiceSessionError.audioConversionFailed
+    private func stopAudioCapture() {
+        if audioEngine.isRunning {
+            audioEngine.stop()
         }
+        if hasInstalledAudioTap {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            hasInstalledAudioTap = false
+        }
+        audioBufferContinuation?.finish()
+        audioBufferContinuation = nil
+    }
+
+    private func deactivateAudioSession() {
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+    }
+
+    private func fail(with error: Error) {
+        stopAudioCapture()
+        analyzerInputContinuation?.finish()
+        audioFeedTask?.cancel()
+        resultsTask?.cancel()
+        deactivateAudioSession()
+        errorMessage = (error as? LocalizedError)?.errorDescription
+            ?? "语音识别暂时不可用，请稍后重试。"
+        phase = .failed
+    }
+}
+
+nonisolated private struct CapturedAudioBuffer: @unchecked Sendable {
+    let value: AVAudioPCMBuffer
+
+    init(_ value: AVAudioPCMBuffer) {
+        self.value = value
+    }
+}
+
+private actor VoiceAudioBufferConverter {
+    private let converter: AVAudioConverter
+    private let outputFormat: AVAudioFormat
+
+    init?(inputFormat: AVAudioFormat, outputFormat: AVAudioFormat) {
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            return nil
+        }
+        self.converter = converter
+        self.outputFormat = outputFormat
+    }
+
+    func convert(_ capturedBuffer: CapturedAudioBuffer) throws -> CapturedAudioBuffer {
+        let buffer = capturedBuffer.value
         if buffer.format == outputFormat {
-            return buffer
+            return capturedBuffer
         }
 
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
@@ -268,37 +355,7 @@ final class VoiceSessionController {
         guard status != .error else {
             throw VoiceSessionError.audioConversionFailed
         }
-        return convertedBuffer
-    }
-
-    private func stopAudioCapture() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        if hasInstalledAudioTap {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            hasInstalledAudioTap = false
-        }
-        audioBufferContinuation?.finish()
-        audioBufferContinuation = nil
-    }
-
-    private func deactivateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
-    }
-
-    private func fail(with error: Error) {
-        stopAudioCapture()
-        analyzerInputContinuation?.finish()
-        audioFeedTask?.cancel()
-        resultsTask?.cancel()
-        deactivateAudioSession()
-        errorMessage = (error as? LocalizedError)?.errorDescription
-            ?? "语音识别暂时不可用，请稍后重试。"
-        phase = .failed
+        return CapturedAudioBuffer(convertedBuffer)
     }
 }
 

@@ -7,17 +7,16 @@
 
 import SwiftUI
 import SwiftData
-import AppIntents
 
 @main
 struct WellPhoneApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     private let sharedModelContainer: ModelContainer
     @State private var conversationController: ConversationController
     @State private var taskController: TaskController
     @State private var voiceActivationStore = VoiceActivationStore.shared
 
     init() {
-        WellPhoneAppShortcuts.updateAppShortcutParameters()
         let schema = Schema([
             Conversation.self,
             ChatMessage.self,
@@ -60,6 +59,10 @@ struct WellPhoneApp: App {
                     await taskController.recoverInterruptedTasks()
                     await taskController.flushPendingCheckpoints()
                     await taskController.flushPendingResultReports()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active else { return }
+                    voiceActivationStore.recoverPendingActivation()
                 }
         }
         .modelContainer(sharedModelContainer)

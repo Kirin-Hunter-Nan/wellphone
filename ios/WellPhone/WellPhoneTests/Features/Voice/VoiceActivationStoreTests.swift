@@ -30,7 +30,14 @@ struct VoiceActivationStoreTests {
             defaults: defaults,
             now: { requestDate.addingTimeInterval(20) }
         )
-        #expect(!nextLaunch.isVoiceConversationPresented)
+        #expect(nextLaunch.activationID == requestID)
+
+        relaunchedProcess.dismissActivation()
+        let launchAfterDismissal = VoiceActivationStore(
+            defaults: defaults,
+            now: { requestDate.addingTimeInterval(30) }
+        )
+        #expect(!launchAfterDismissal.isVoiceConversationPresented)
     }
 
     @Test @MainActor

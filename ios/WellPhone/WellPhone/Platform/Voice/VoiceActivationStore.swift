@@ -48,7 +48,9 @@ final class VoiceActivationStore {
     }
 
     func markPresented() {
-        clearPersistedActivation()
+        // Keep the request persisted while the voice flow is active. SwiftUI can
+        // temporarily tear down presentations during a scene transition, and the
+        // app may also be terminated while a speech asset is downloading.
     }
 
     func dismissActivation() {
