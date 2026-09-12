@@ -1,13 +1,6 @@
 import Foundation
 import Observation
 import SwiftData
-import UIKit
-
-struct PendingChatImage: Identifiable {
-    let id: UUID
-    let data: Data
-    let mimeType: String
-}
 
 @MainActor
 @Observable
@@ -16,12 +9,14 @@ final class ConversationController {
     private(set) var conversations: [Conversation] = []
     private(set) var messages: [ChatMessage] = []
     private(set) var isGenerating = false
-    private(set) var errorMessage: String?
-    private(set) var pendingImages: [PendingChatImage] = []
+    var errorMessage: String?
+    var pendingImages: [PendingChatImage] = []
 
-    private let modelContext: ModelContext
+    let modelContext: ModelContext
     private let gateway: any ModelGateway
     private let taskController: TaskController
+    let imageProcessor: any ChatImageProcessing
+    let attachmentFileStore: any ChatAttachmentFileStoring
     private var conversation: Conversation?
     private var generationTask: Task<Void, Never>?
 
@@ -32,11 +27,15 @@ final class ConversationController {
     init(
         modelContext: ModelContext,
         gateway: any ModelGateway,
-        taskController: TaskController
+        taskController: TaskController,
+        imageProcessor: any ChatImageProcessing = DefaultChatImageProcessor(),
+        attachmentFileStore: any ChatAttachmentFileStoring = LocalChatAttachmentFileStore()
     ) {
         self.modelContext = modelContext
         self.gateway = gateway
         self.taskController = taskController
+        self.imageProcessor = imageProcessor
+        self.attachmentFileStore = attachmentFileStore
         restoreMostRecentConversation()
         taskController.onAssistantFollowUp = { [weak self] followUp in
             self?.appendAssistantFollowUp(followUp)
@@ -63,7 +62,11 @@ final class ConversationController {
         modelContext.insert(message)
         for image in pendingImages {
             do {
-                let path = try persistAttachmentData(image.data, id: image.id)
+                let path = try attachmentFileStore.persist(
+                    image.data,
+                    id: image.id,
+                    fileExtension: "jpg"
+                )
                 modelContext.insert(ChatAttachment(
                     id: image.id,
                     messageID: message.id,
@@ -277,97 +280,4 @@ final class ConversationController {
         }
     }
 
-    func addImage(data: Data) throws {
-        guard pendingImages.count < 4 else {
-            throw ChatAttachmentError.tooManyImages
-        }
-        guard let image = UIImage(data: data) else {
-            throw ChatAttachmentError.invalidImage
-        }
-        let normalized = try normalizedJPEG(image)
-        guard normalized.count <= 4 * 1_024 * 1_024,
-              pendingImages.reduce(0, { $0 + $1.data.count }) + normalized.count
-                <= 12 * 1_024 * 1_024 else {
-            throw ChatAttachmentError.imageTooLarge
-        }
-        pendingImages.append(PendingChatImage(
-            id: UUID(), data: normalized, mimeType: "image/jpeg"
-        ))
-    }
-
-    func removePendingImage(id: UUID) {
-        pendingImages.removeAll { $0.id == id }
-    }
-
-    func showAttachmentError(_ error: any Error) {
-        errorMessage = error.localizedDescription
-    }
-
-    func attachments(for message: ChatMessage) -> [ChatAttachment] {
-        let messageID = message.id
-        let descriptor = FetchDescriptor<ChatAttachment>(
-            predicate: #Predicate { $0.messageID == messageID },
-            sortBy: [SortDescriptor(\.createdAt)]
-        )
-        return (try? modelContext.fetch(descriptor)) ?? []
-    }
-
-    private func makePromptMessage(_ message: ChatMessage) -> ChatPromptMessage {
-        let imageParts = attachments(for: message).compactMap { attachment -> ChatPromptContentPart? in
-            guard attachment.kind == .image,
-                  let path = attachment.localPath,
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
-            return .imageURL("data:\(attachment.mimeType);base64,\(data.base64EncodedString())")
-        }
-        guard !imageParts.isEmpty else {
-            return ChatPromptMessage(role: message.role, content: message.text)
-        }
-        var parts: [ChatPromptContentPart] = []
-        if !message.text.isEmpty {
-            parts.append(.text(message.text))
-        }
-        parts.append(contentsOf: imageParts)
-        return ChatPromptMessage(role: message.role, parts: parts)
-    }
-
-    private func normalizedJPEG(_ image: UIImage) throws -> Data {
-        let maximumDimension: CGFloat = 1_600
-        let largest = max(image.size.width, image.size.height)
-        let scale = largest > maximumDimension ? maximumDimension / largest : 1
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let rendered = UIGraphicsImageRenderer(size: size).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
-        guard let data = rendered.jpegData(compressionQuality: 0.72) else {
-            throw ChatAttachmentError.invalidImage
-        }
-        return data
-    }
-
-    private func persistAttachmentData(_ data: Data, id: UUID) throws -> String {
-        let base = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appendingPathComponent("WellPhoneAttachments", isDirectory: true)
-        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        let url = base.appendingPathComponent("\(id.uuidString.lowercased()).jpg")
-        try data.write(to: url, options: .atomic)
-        return url.path
-    }
-}
-
-private enum ChatAttachmentError: LocalizedError {
-    case tooManyImages
-    case invalidImage
-    case imageTooLarge
-
-    var errorDescription: String? {
-        switch self {
-        case .tooManyImages: "每条消息最多选择 4 张图片。"
-        case .invalidImage: "无法读取这张图片。"
-        case .imageTooLarge: "图片处理后仍然过大，请选择另一张。"
-        }
-    }
 }
