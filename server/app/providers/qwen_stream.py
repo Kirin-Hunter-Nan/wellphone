@@ -76,13 +76,45 @@ class QwenReplyStream:
                         "invalid_upstream_event", "模型返回了无效的流事件。"
                     )
                     return
-                for choice in chunk.get("choices", []):
+                if not isinstance(chunk, dict):
+                    yield self._failed(
+                        "invalid_upstream_event", "模型返回了无效的流事件。"
+                    )
+                    return
+                choices = chunk.get("choices", [])
+                if not isinstance(choices, list):
+                    yield self._failed(
+                        "invalid_upstream_event", "模型返回了无效的流事件。"
+                    )
+                    return
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        yield self._failed(
+                            "invalid_upstream_event", "模型返回了无效的流事件。"
+                        )
+                        return
                     delta = choice.get("delta") or {}
+                    if not isinstance(delta, dict):
+                        yield self._failed(
+                            "invalid_upstream_event", "模型返回了无效的流事件。"
+                        )
+                        return
                     text = delta.get("content")
                     if isinstance(text, str) and text:
                         assistant_text += text
                         yield encode_sse(assistant_delta(self._response_id, text))
-                    for tool_call in delta.get("tool_calls") or []:
+                    raw_tool_calls = delta.get("tool_calls") or []
+                    if not isinstance(raw_tool_calls, list):
+                        yield self._failed(
+                            "invalid_upstream_event", "模型返回了无效的流事件。"
+                        )
+                        return
+                    for tool_call in raw_tool_calls:
+                        if not isinstance(tool_call, dict):
+                            yield self._failed(
+                                "invalid_upstream_event", "模型返回了无效的流事件。"
+                            )
+                            return
                         index = tool_call.get("index", 0)
                         if isinstance(index, int):
                             tool_calls.setdefault(index, ToolCallAccumulator()).append(tool_call)
