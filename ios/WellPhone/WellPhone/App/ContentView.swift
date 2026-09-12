@@ -51,6 +51,7 @@ private struct PreviewRoot: View {
         ContentView()
             .environment(controller)
             .environment(taskController)
+            .environment(VoiceActivationStore.shared)
             .modelContainer(previewContainer)
     }
 }

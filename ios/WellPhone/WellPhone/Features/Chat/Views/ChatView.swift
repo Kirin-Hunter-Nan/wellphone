@@ -3,9 +3,11 @@ import SwiftUI
 struct ChatView: View {
     @Environment(ConversationController.self) private var controller
     @Environment(TaskController.self) private var taskController
+    @Environment(VoiceActivationStore.self) private var voiceActivationStore
     @FocusState private var isComposerFocused: Bool
     @State private var isSidebarPresented = false
     @State private var isTaskCenterPresented = false
+    @State private var voiceSession = VoiceSessionController()
 
     var body: some View {
         @Bindable var controller = controller
@@ -82,6 +84,29 @@ struct ChatView: View {
                 }
             }
             .animation(.snappy, value: taskController.completionBanner?.id)
+            .fullScreenCover(
+                isPresented: Binding(
+                    get: { voiceActivationStore.isVoiceConversationPresented },
+                    set: { presented in
+                        if !presented { voiceActivationStore.dismissActivation() }
+                    }
+                )
+            ) {
+                VoiceConversationView(
+                    session: voiceSession,
+                    dismiss: {
+                        voiceActivationStore.dismissActivation()
+                    },
+                    submit: { transcript in
+                        controller.draft = transcript
+                        voiceActivationStore.dismissActivation()
+                        controller.sendDraft()
+                    }
+                )
+                .onAppear {
+                    voiceActivationStore.markPresented()
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .agentTaskNotificationOpened)) { _ in
                 isComposerFocused = false
                 isSidebarPresented = false
