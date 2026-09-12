@@ -4,6 +4,7 @@ import httpx
 
 from app.api.protocol import ChatRequest, ToolResultSubmission
 from app.core.config import Settings
+from app.intents.resolver import IntentResolver
 from app.providers.base import ProviderError, ProviderToolCallContext, ToolCallContextSink
 from app.providers.qwen_messages import (
     continuation_payload,
@@ -30,6 +31,7 @@ class QwenProvider:
         self._client = client or httpx.AsyncClient(timeout=120)
         self._owns_client = client is None
         self._catalog = catalog or ModelToolCatalog()
+        self._intents = IntentResolver(self._catalog)
 
     async def open_reply(
         self,
@@ -42,13 +44,13 @@ class QwenProvider:
             "POST",
             self._endpoint,
             headers=self._headers(accept_stream=True),
-            json=streaming_payload(self._settings.model, messages, self._catalog),
+            json=streaming_payload(self._settings.model, messages, self._intents),
         )
         response = await self._send(upstream_request, stream=True)
         if "text/event-stream" not in response.headers.get("content-type", ""):
             await response.aclose()
             raise UpstreamError(502, "Qwen returned a non-streaming response")
-        return QwenReplyStream(response, self._catalog, messages, on_tool_call)
+        return QwenReplyStream(response, self._intents, messages, on_tool_call)
 
     async def continue_reply(
         self,

@@ -73,6 +73,11 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     upstream_body = json.loads(captured_request.content)
     assert upstream_body["model"] == "qwen-multimodal-test"
     assert upstream_body["tools"][0]["function"]["name"] == "reminder_create"
+    assert any(
+        item["function"]["name"] == "intent_clarify"
+        for item in upstream_body["tools"]
+    )
+    assert "choose exactly one outcome" in upstream_body["messages"][0]["content"]
     assert "Asia/Shanghai" in upstream_body["messages"][0]["content"]
     assert "never infer, recalculate" in upstream_body["messages"][0]["content"]
     assert "The trip origin is optional" in upstream_body["messages"][0]["content"]
@@ -152,6 +157,39 @@ async def test_continues_qwen_with_the_verified_device_tool_result() -> None:
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == "call_1"
     assert json.loads(tool_message["content"])["status"] == "verified"
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_streams_structured_intent_clarification_as_assistant_text() -> None:
+    upstream = (
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2",'
+        '"function":{"name":"intent_clarify","arguments":"{\\"capability\\":'
+        '\\"travel.plan\\",\\"question\\":\\"请告诉我旅行的开始和结束日期。\\",'
+        '\\"missingFields\\":[\\"startDate\\",\\"endDate\\"]}"}}]}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=upstream,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    stream = await QwenProvider(make_settings(), client=client).open_reply(make_request())
+    encoded = "".join([event async for event in stream.events()])
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in encoded.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert [event["type"] for event in events] == [
+        "response.started", "assistant.delta", "response.completed"
+    ]
+    assert events[1]["text"] == "请告诉我旅行的开始和结束日期。"
     await client.aclose()
 
 

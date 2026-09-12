@@ -2,6 +2,8 @@
 
 ## 边界
 
+聊天入口现在通过 provider-neutral `IntentResolver` 将每轮模型决策统一为三种结果：`chat`、`clarify` 或 `action`。它仍只发起一次模型请求：普通回答产生 `chat`，缺少执行参数时模型调用内部 `intent_clarify` 并产生 `clarify`，参数完整的业务 Tool Call 产生 `action`。只有 `action` 会被标准化为 capability 并进入确认与执行链；意图层不直接执行任何副作用。
+
 聊天模型只请求业务能力；短任务由客户端 Runtime Harness 执行，长任务则由服务端统一 Agent Loop 在确认后自主调用白名单原子 Tool。两条链路都由确定性边界负责确认、参数校验、真实执行和结果验证。
 
 `reminder_create` 只存在于 Qwen Provider 内部，并在 Python 服务端被转换为平台无关 capability `reminder.create`。Swift 客户端不识别任何模型厂商的 Tool 名称。参数解析、用户确认、EventKit 写入和回读验证不是独立的模型 Tool。
