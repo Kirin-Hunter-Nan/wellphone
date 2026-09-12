@@ -203,31 +203,36 @@ flowchart TB
 - `TaskStore` 是任务状态的唯一事实来源。
 - 平台后台 API 只能被 `BackgroundCoordinator` 调用。
 
-## 5. 推荐目录结构
+## 5. 当前目录结构
 
 ```text
 wellphone/
 ├── ios/
-│   ├── WellPhoneApp/
-│   │   ├── App/
-│   │   ├── Features/Chat/
-│   │   ├── Features/Tasks/
-│   │   └── Infrastructure/
-│   ├── WellPhoneIntents/
-│   ├── WellPhoneShareExtension/
-│   └── Config/
-├── Packages/
-│   ├── AgentCore/
-│   ├── AgentTools/
-│   ├── TaskStore/
-│   ├── ModelGateway/
-│   └── BackgroundRuntime/
+│   └── WellPhone/WellPhone/
+│       ├── App/
+│       ├── Agent/Runtime/
+│       ├── Agent/Tools/
+│       ├── Core/Configuration/
+│       ├── Core/Domain/
+│       ├── Core/Networking/
+│       ├── Features/Chat/
+│       ├── Features/Tasks/
+│       ├── Platform/Calendar/
+│       ├── Platform/Notifications/
+│       └── Resources/
 ├── shared/
 │   └── schemas/
 │       ├── protocol/
 │       └── capabilities/
 ├── server/
+│   ├── app/api/
+│   ├── app/agent/
+│   ├── app/bootstrap/
+│   ├── app/conversations/
+│   ├── app/core/
 │   ├── app/providers/
+│   ├── app/tasks/
+│   ├── app/tool_results/
 │   ├── app/tools/
 │   ├── tests/
 │   ├── Dockerfile
@@ -239,7 +244,7 @@ wellphone/
 └── README.md
 ```
 
-共享协议和 capability 名称保持平台无关，为未来增加 Android 虚拟屏执行器保留扩展点。
+共享协议和 capability 名称保持平台无关，为未来增加 Android 客户端保留扩展点。更具体的模块职责和依赖方向参见 `docs/ARCHITECTURE.md`。
 
 ## 6. 数据模型
 

@@ -8,13 +8,13 @@ from uuid import uuid4
 
 import httpx
 
-from app.config import Settings
+from app.core.config import Settings
 from app.providers.base import (
     ProviderError,
     ProviderToolCallContext,
     ToolCallContextSink,
 )
-from app.protocol import (
+from app.api.protocol import (
     ChatRequest,
     ToolResultSubmission,
     assistant_delta,

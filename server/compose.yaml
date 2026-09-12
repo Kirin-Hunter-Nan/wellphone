@@ -50,7 +50,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: wellphone-ai-backend:local
-    command: ["python", "-m", "app.worker"]
+    command: ["python", "-m", "app.bootstrap.worker"]
     env_file:
       - .env
     environment:

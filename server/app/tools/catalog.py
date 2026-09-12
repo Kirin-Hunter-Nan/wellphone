@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.protocol import ToolRequest
+from app.api.protocol import ToolRequest
 
 
 class ToolCatalogError(ValueError):

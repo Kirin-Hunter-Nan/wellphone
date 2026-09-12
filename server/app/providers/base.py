@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
-from app.protocol import ChatRequest, ToolResultSubmission
+from app.api.protocol import ChatRequest, ToolResultSubmission
 
 
 class ProviderError(RuntimeError):
