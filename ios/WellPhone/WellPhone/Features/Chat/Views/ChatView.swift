@@ -18,7 +18,13 @@ struct ChatView: View {
                 NavigationStack {
                     VStack(spacing: 0) {
                         conversation
-                        ChatComposer(isFocused: $isComposerFocused)
+                        ChatComposer(
+                            isFocused: $isComposerFocused,
+                            startVoiceConversation: {
+                                isComposerFocused = false
+                                voiceActivationStore.requestActivation(source: .composer)
+                            }
+                        )
                     }
                     .navigationTitle("WellPhone")
                     .navigationBarTitleDisplayMode(.inline)
@@ -111,7 +117,9 @@ struct ChatView: View {
                 guard let activationID,
                       preparedVoiceActivationID != activationID else { return }
                 preparedVoiceActivationID = activationID
-                controller.startNewConversation()
+                if voiceActivationStore.source == .externalWake {
+                    controller.startNewConversation()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .agentTaskNotificationOpened)) { _ in
                 isComposerFocused = false

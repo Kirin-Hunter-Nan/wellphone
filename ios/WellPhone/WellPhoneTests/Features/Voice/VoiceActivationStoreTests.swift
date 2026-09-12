@@ -22,6 +22,7 @@ struct VoiceActivationStoreTests {
         )
         #expect(relaunchedProcess.activationID == requestID)
         #expect(relaunchedProcess.isVoiceConversationPresented)
+        #expect(relaunchedProcess.source == .externalWake)
 
         relaunchedProcess.markPresented()
         #expect(relaunchedProcess.isVoiceConversationPresented)
@@ -70,6 +71,26 @@ struct VoiceActivationStoreTests {
         store.dismissActivation()
 
         #expect(store.activationID == nil)
+        #expect(store.source == nil)
         #expect(!store.isVoiceConversationPresented)
+    }
+
+    @Test @MainActor
+    func composerActivationSourceSurvivesAColdLaunch() throws {
+        let suiteName = "VoiceActivationStoreTests.composer.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let requestDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+        VoiceActivationStore(
+            defaults: defaults,
+            now: { requestDate }
+        ).requestActivation(source: .composer)
+
+        let relaunchedProcess = VoiceActivationStore(
+            defaults: defaults,
+            now: { requestDate.addingTimeInterval(10) }
+        )
+        #expect(relaunchedProcess.source == .composer)
     }
 }

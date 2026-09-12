@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatComposer: View {
     @Environment(ConversationController.self) private var controller
     @FocusState.Binding var isFocused: Bool
+    let startVoiceConversation: () -> Void
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
 
     var body: some View {
@@ -67,6 +68,18 @@ struct ChatComposer: View {
                     guard canSend, !controller.isGenerating else { return }
                     controller.sendDraft()
                 }
+
+                Button(action: startVoiceConversation) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 36, height: 36)
+                        .background(Color.accentColor.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(controller.isGenerating)
+                .accessibilityLabel("开始语音输入")
+                .accessibilityIdentifier("chat.voice-input")
 
                 Group {
                     if controller.isGenerating {

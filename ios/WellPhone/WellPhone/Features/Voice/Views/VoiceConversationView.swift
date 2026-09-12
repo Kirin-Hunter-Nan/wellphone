@@ -5,6 +5,7 @@ struct VoiceConversationView: View {
     @Bindable var session: VoiceSessionController
     let dismiss: () -> Void
     let submit: (String) -> Void
+    @State private var didAutoSubmit = false
 
     var body: some View {
         NavigationStack {
@@ -48,7 +49,13 @@ struct VoiceConversationView: View {
         }
         .interactiveDismissDisabled()
         .task {
+            didAutoSubmit = false
             await session.start()
+        }
+        .onChange(of: session.phase) { _, phase in
+            guard phase == .ready, !didAutoSubmit, session.canSubmit else { return }
+            didAutoSubmit = true
+            submit(session.transcript)
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
@@ -85,7 +92,7 @@ struct VoiceConversationView: View {
     @ViewBuilder
     private var controls: some View {
         switch session.phase {
-        case .preparing, .finalizing:
+        case .preparing, .prompting, .finalizing, .ready:
             ProgressView()
                 .controlSize(.large)
                 .frame(height: 56)
@@ -96,24 +103,10 @@ struct VoiceConversationView: View {
             .buttonStyle(.borderedProminent)
             .frame(height: 52)
         case .listening:
-            Button {
-                Task { await session.finish() }
-            } label: {
-                Label("说完了", systemImage: "stop.fill")
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-            }
-            .buttonStyle(.borderedProminent)
-        case .ready:
-            Button {
-                submit(session.transcript)
-            } label: {
-                Label("发送给 Agent", systemImage: "arrow.up.circle.fill")
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!session.canSubmit)
+            Label("检测到你说完后将自动发送", systemImage: "waveform")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(height: 52)
         case .failed, .idle:
             Button("重新开始") {
                 Task { await session.start() }
@@ -128,9 +121,10 @@ struct VoiceConversationView: View {
         case .idle: "准备开始"
         case .preparing: "正在准备语音识别"
         case .listening: "我在听"
+        case .prompting: "请告诉我你的指令"
         case .paused: "语音输入已暂停"
         case .finalizing: "正在整理你的指令"
-        case .ready: "请确认后发送"
+        case .ready: "正在发送"
         case .failed: "无法开始语音对话"
         }
     }
@@ -142,10 +136,11 @@ struct VoiceConversationView: View {
         return switch session.phase {
         case .idle: "轻点开始后说出你的任务"
         case .preparing: "首次使用可能需要下载本地语言模型"
-        case .listening: "说完后轻点“说完了”"
+        case .listening: "自然说话即可，停顿后会自动发送"
+        case .prompting: "没有听到声音，我会继续等待"
         case .paused: "返回前台后会自动继续，也可以轻点下方按钮"
         case .finalizing: "语音仍在设备端完成最后转写"
-        case .ready: "发送前可以检查上面的文字"
+        case .ready: "正在将语音消息交给 Agent"
         case .failed: "请检查麦克风权限和网络后重试"
         }
     }

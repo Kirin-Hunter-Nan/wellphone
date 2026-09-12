@@ -8,6 +8,7 @@ enum VoiceSessionPhase: Equatable {
     case idle
     case preparing
     case listening
+    case prompting
     case paused
     case finalizing
     case ready
@@ -34,9 +35,12 @@ final class VoiceSessionController {
     private var converter: VoiceAudioBufferConverter?
     private var audioFeedTask: Task<Void, Never>?
     private var resultsTask: Task<Void, Never>?
+    private var endpointMonitorTask: Task<Void, Never>?
     private var hasInstalledAudioTap = false
     private var finalizedTranscript = ""
     private var volatileTranscript = ""
+    private var endpointDetector = VoiceEndpointDetector()
+    private let promptSpeaker = VoicePromptSpeaker()
 
     func start() async {
         guard phase == .idle || phase == .failed || phase == .ready else { return }
@@ -87,6 +91,7 @@ final class VoiceSessionController {
             self.converter = converter
             startFeedingAudio(audioStream, converter: converter)
             phase = .listening
+            startEndpointMonitoring()
         } catch {
             fail(with: error)
         }
@@ -95,6 +100,7 @@ final class VoiceSessionController {
     func finish() async {
         guard phase == .listening else { return }
         phase = .finalizing
+        stopEndpointMonitoring()
 
         stopAudioCapture()
         await audioFeedTask?.value
@@ -113,7 +119,8 @@ final class VoiceSessionController {
     }
 
     func pauseForBackground() {
-        guard phase == .listening else { return }
+        guard phase == .listening || phase == .prompting else { return }
+        promptSpeaker.stop()
         audioEngine.pause()
         phase = .paused
     }
@@ -125,6 +132,7 @@ final class VoiceSessionController {
             try configureAudioSession()
             audioEngine.prepare()
             try audioEngine.start()
+            endpointDetector.resume(at: Self.uptime)
             phase = .listening
         } catch {
             fail(with: error)
@@ -132,6 +140,8 @@ final class VoiceSessionController {
     }
 
     func cancel() {
+        stopEndpointMonitoring()
+        promptSpeaker.stop()
         stopAudioCapture()
         analyzerInputContinuation?.finish()
         audioFeedTask?.cancel()
@@ -197,7 +207,11 @@ final class VoiceSessionController {
 
     private func configureAudioSession() throws {
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .spokenAudio)
+        try audioSession.setCategory(
+            .playAndRecord,
+            mode: .spokenAudio,
+            options: [.defaultToSpeaker]
+        )
         try audioSession.setActive(true)
     }
 
@@ -233,6 +247,7 @@ final class VoiceSessionController {
                     try Task.checkCancellation()
                     let converted = try await converter.convert(buffer)
                     inputContinuation?.yield(AnalyzerInput(buffer: converted.value))
+                    await self?.observeAudioLevel(converted.levelDecibels)
                 }
             } catch is CancellationError {
                 return
@@ -266,6 +281,72 @@ final class VoiceSessionController {
             volatileTranscript = text
         }
         transcript = finalizedTranscript + volatileTranscript
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            endpointDetector.observeTranscript(at: Self.uptime)
+        }
+    }
+
+    private func observeAudioLevel(_ levelDecibels: Float) {
+        guard phase == .listening else { return }
+        endpointDetector.observeAudio(
+            at: Self.uptime,
+            isVoice: levelDecibels >= VoiceEndpointDetector.speechThresholdDecibels
+        )
+    }
+
+    private func startEndpointMonitoring() {
+        endpointMonitorTask?.cancel()
+        endpointDetector.start(at: Self.uptime)
+        endpointMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+                guard let self, self.phase == .listening else { continue }
+
+                switch self.endpointDetector.nextAction(
+                    at: Self.uptime,
+                    hasTranscript: !self.transcript
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                ) {
+                case .none:
+                    continue
+                case .prompt:
+                    await self.playNoSpeechPrompt()
+                case .finish:
+                    self.endpointMonitorTask = nil
+                    Task { [weak self] in
+                        await self?.finish()
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    private func playNoSpeechPrompt() async {
+        guard phase == .listening else { return }
+        audioEngine.pause()
+        phase = .prompting
+        await promptSpeaker.speak("我在听，请说出你的指令。")
+        guard phase == .prompting else { return }
+
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+            endpointDetector.promptDidFinish(at: Self.uptime)
+            phase = .listening
+        } catch {
+            fail(with: error)
+        }
+    }
+
+    private func stopEndpointMonitoring() {
+        endpointMonitorTask?.cancel()
+        endpointMonitorTask = nil
     }
 
     private func stopAudioCapture() {
@@ -288,6 +369,8 @@ final class VoiceSessionController {
     }
 
     private func fail(with error: Error) {
+        stopEndpointMonitoring()
+        promptSpeaker.stop()
         stopAudioCapture()
         analyzerInputContinuation?.finish()
         audioFeedTask?.cancel()
@@ -297,6 +380,10 @@ final class VoiceSessionController {
             ?? "语音识别暂时不可用，请稍后重试。"
         phase = .failed
     }
+
+    private static var uptime: TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
 }
 
 nonisolated private struct CapturedAudioBuffer: @unchecked Sendable {
@@ -305,6 +392,11 @@ nonisolated private struct CapturedAudioBuffer: @unchecked Sendable {
     init(_ value: AVAudioPCMBuffer) {
         self.value = value
     }
+}
+
+nonisolated private struct ConvertedAudioBuffer: @unchecked Sendable {
+    let value: AVAudioPCMBuffer
+    let levelDecibels: Float
 }
 
 private actor VoiceAudioBufferConverter {
@@ -319,10 +411,14 @@ private actor VoiceAudioBufferConverter {
         self.outputFormat = outputFormat
     }
 
-    func convert(_ capturedBuffer: CapturedAudioBuffer) throws -> CapturedAudioBuffer {
+    func convert(_ capturedBuffer: CapturedAudioBuffer) throws -> ConvertedAudioBuffer {
         let buffer = capturedBuffer.value
+        let levelDecibels = VoiceAudioLevel.decibels(in: buffer)
         if buffer.format == outputFormat {
-            return capturedBuffer
+            return ConvertedAudioBuffer(
+                value: buffer,
+                levelDecibels: levelDecibels
+            )
         }
 
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
@@ -355,7 +451,185 @@ private actor VoiceAudioBufferConverter {
         guard status != .error else {
             throw VoiceSessionError.audioConversionFailed
         }
-        return CapturedAudioBuffer(convertedBuffer)
+        return ConvertedAudioBuffer(
+            value: convertedBuffer,
+            levelDecibels: levelDecibels
+        )
+    }
+}
+
+nonisolated private enum VoiceAudioLevel {
+    static func decibels(in buffer: AVAudioPCMBuffer) -> Float {
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return -.infinity }
+
+        let meanSquare: Double
+        if let channel = buffer.floatChannelData?.pointee {
+            var sum = 0.0
+            for index in 0..<frameCount {
+                let sample = Double(channel[index])
+                sum += sample * sample
+            }
+            meanSquare = sum / Double(frameCount)
+        } else if let channel = buffer.int16ChannelData?.pointee {
+            var sum = 0.0
+            for index in 0..<frameCount {
+                let sample = Double(channel[index]) / Double(Int16.max)
+                sum += sample * sample
+            }
+            meanSquare = sum / Double(frameCount)
+        } else {
+            return -.infinity
+        }
+
+        let rootMeanSquare = sqrt(meanSquare)
+        return 20 * log10(Float(max(rootMeanSquare, 0.000_000_1)))
+    }
+}
+
+nonisolated struct VoiceEndpointDetector {
+    enum Action: Equatable {
+        case none
+        case prompt
+        case finish
+    }
+
+    static let speechThresholdDecibels: Float = -45
+    static let initialSilenceDuration: TimeInterval = 3
+    static let endSilenceDuration: TimeInterval = 1.5
+    static let minimumVoiceDuration: TimeInterval = 0.15
+
+    private var listeningStartedAt: TimeInterval = 0
+    private var candidateVoiceStartedAt: TimeInterval?
+    private var lastActivityAt: TimeInterval?
+    private var hasDetectedSpeech = false
+    private var hasPrompted = false
+    private var hasFinished = false
+
+    mutating func start(at time: TimeInterval) {
+        listeningStartedAt = time
+        candidateVoiceStartedAt = nil
+        lastActivityAt = nil
+        hasDetectedSpeech = false
+        hasPrompted = false
+        hasFinished = false
+    }
+
+    mutating func observeAudio(at time: TimeInterval, isVoice: Bool) {
+        guard isVoice else {
+            candidateVoiceStartedAt = nil
+            return
+        }
+
+        if hasDetectedSpeech {
+            lastActivityAt = time
+            return
+        }
+
+        guard let candidateVoiceStartedAt else {
+            self.candidateVoiceStartedAt = time
+            return
+        }
+        guard time - candidateVoiceStartedAt >= Self.minimumVoiceDuration else { return }
+        hasDetectedSpeech = true
+        lastActivityAt = time
+    }
+
+    mutating func observeTranscript(at time: TimeInterval) {
+        hasDetectedSpeech = true
+        lastActivityAt = time
+    }
+
+    mutating func nextAction(
+        at time: TimeInterval,
+        hasTranscript: Bool
+    ) -> Action {
+        guard !hasFinished else { return .none }
+
+        if !hasDetectedSpeech,
+           !hasPrompted,
+           time - listeningStartedAt >= Self.initialSilenceDuration {
+            hasPrompted = true
+            return .prompt
+        }
+
+        if hasDetectedSpeech,
+           hasTranscript,
+           let lastActivityAt,
+           time - lastActivityAt >= Self.endSilenceDuration {
+            hasFinished = true
+            return .finish
+        }
+
+        return .none
+    }
+
+    mutating func promptDidFinish(at time: TimeInterval) {
+        listeningStartedAt = time
+        candidateVoiceStartedAt = nil
+    }
+
+    mutating func resume(at time: TimeInterval) {
+        candidateVoiceStartedAt = nil
+        if hasDetectedSpeech {
+            lastActivityAt = time
+        } else {
+            listeningStartedAt = time
+        }
+    }
+}
+
+@MainActor
+private final class VoicePromptSpeaker: NSObject, AVSpeechSynthesizerDelegate {
+    private let synthesizer = AVSpeechSynthesizer()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func speak(_ text: String) async {
+        stop()
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+        utterance.rate = 0.48
+
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            synthesizer.speak(utterance)
+        }
+    }
+
+    func stop() {
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+        completeSpeech()
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didFinish utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor [weak self] in
+            self?.completeSpeech()
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didCancel utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor [weak self] in
+            self?.completeSpeech()
+        }
+    }
+
+    private func completeSpeech() {
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume()
     }
 }
 

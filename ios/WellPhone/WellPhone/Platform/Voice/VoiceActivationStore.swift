@@ -1,6 +1,11 @@
 import Foundation
 import Observation
 
+enum VoiceActivationSource: String, Sendable {
+    case externalWake
+    case composer
+}
+
 @MainActor
 @Observable
 final class VoiceActivationStore {
@@ -9,11 +14,13 @@ final class VoiceActivationStore {
     private enum Keys {
         static let requestID = "voice.activation.request-id"
         static let requestedAt = "voice.activation.requested-at"
+        static let source = "voice.activation.source"
     }
 
     private static let maximumPendingAge: TimeInterval = 5 * 60
 
     private(set) var activationID: UUID?
+    private(set) var source: VoiceActivationSource?
 
     var isVoiceConversationPresented: Bool {
         activationID != nil
@@ -28,22 +35,26 @@ final class VoiceActivationStore {
     ) {
         self.defaults = defaults
         self.now = now
-        activationID = Self.pendingActivation(
+        let pendingActivation = Self.pendingActivation(
             in: defaults,
             now: now(),
             maximumAge: Self.maximumPendingAge
         )
+        activationID = pendingActivation?.id
+        source = pendingActivation?.source
         if activationID == nil {
             clearPersistedActivation()
         }
     }
 
     @discardableResult
-    func requestActivation() -> UUID {
+    func requestActivation(source: VoiceActivationSource = .externalWake) -> UUID {
         let requestID = UUID()
         defaults.set(requestID.uuidString, forKey: Keys.requestID)
         defaults.set(now(), forKey: Keys.requestedAt)
+        defaults.set(source.rawValue, forKey: Keys.source)
         activationID = requestID
+        self.source = source
         return requestID
     }
 
@@ -55,16 +66,19 @@ final class VoiceActivationStore {
 
     func dismissActivation() {
         activationID = nil
+        source = nil
         clearPersistedActivation()
     }
 
     func recoverPendingActivation() {
         guard activationID == nil else { return }
-        activationID = Self.pendingActivation(
+        let pendingActivation = Self.pendingActivation(
             in: defaults,
             now: now(),
             maximumAge: Self.maximumPendingAge
         )
+        activationID = pendingActivation?.id
+        source = pendingActivation?.source
         if activationID == nil {
             clearPersistedActivation()
         }
@@ -73,13 +87,14 @@ final class VoiceActivationStore {
     private func clearPersistedActivation() {
         defaults.removeObject(forKey: Keys.requestID)
         defaults.removeObject(forKey: Keys.requestedAt)
+        defaults.removeObject(forKey: Keys.source)
     }
 
     private static func pendingActivation(
         in defaults: UserDefaults,
         now: Date,
         maximumAge: TimeInterval
-    ) -> UUID? {
+    ) -> (id: UUID, source: VoiceActivationSource)? {
         guard let rawRequestID = defaults.string(forKey: Keys.requestID),
               let requestID = UUID(uuidString: rawRequestID),
               let requestedAt = defaults.object(forKey: Keys.requestedAt) as? Date,
@@ -87,6 +102,9 @@ final class VoiceActivationStore {
               now.timeIntervalSince(requestedAt) <= maximumAge else {
             return nil
         }
-        return requestID
+        let source = defaults.string(forKey: Keys.source)
+            .flatMap(VoiceActivationSource.init(rawValue:))
+            ?? .externalWake
+        return (requestID, source)
     }
 }
