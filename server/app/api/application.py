@@ -30,11 +30,9 @@ from app.api.support import (
 )
 from app.providers.base import ModelProvider, ProviderError, ProviderToolCallContext
 from app.providers.qwen import QwenProvider
-from app.tool_results.store import (
-    PostgreSQLToolResultStore,
-    ToolResultConflictError,
-    ToolResultStore,
-)
+from app.tool_results.models import ToolResultConflictError
+from app.tool_results.repository import ToolResultStore
+from app.tool_results.stores.postgres import PostgreSQLToolResultStore
 from app.tasks.checkpoint_store import (
     InMemoryTaskCheckpointStore,
     PostgreSQLTaskCheckpointStore,

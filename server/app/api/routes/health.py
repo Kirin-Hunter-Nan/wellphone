@@ -7,7 +7,7 @@ from app.conversations.repository import ChatRequestStore
 from app.core.config import Settings
 from app.tasks.checkpoint_store import TaskCheckpointStore
 from app.tasks.store import ServerTaskStore
-from app.tool_results.store import ToolResultStore
+from app.tool_results.repository import ToolResultStore
 
 router = APIRouter()
 
