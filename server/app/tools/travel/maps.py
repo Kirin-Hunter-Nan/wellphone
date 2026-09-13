@@ -1,6 +1,7 @@
 """Apple Maps lookup adapter."""
 
 from urllib.parse import urlencode
+from uuid import UUID
 
 import httpx
 
@@ -14,8 +15,15 @@ class AppleMapsSearchClient:
         self._owns_client = client is None
 
     async def search(
-        self, query: str, destination: str, language: str = "zh-CN"
+        self,
+        query: str,
+        destination: str,
+        language: str = "zh-CN",
+        *,
+        task_id: UUID | None = None,
+        tool_call_id: str | None = None,
     ) -> AppleMapsPlace:
+        del task_id, tool_call_id
         fallback_url = "https://maps.apple.com/?" + urlencode(
             {"q": f"{query} {destination}"}
         )
@@ -46,6 +54,7 @@ class AppleMapsSearchClient:
             longitude=longitude,
             map_url=map_url,
             verified=True,
+            source="apple-maps-server",
         )
 
     async def close(self) -> None:

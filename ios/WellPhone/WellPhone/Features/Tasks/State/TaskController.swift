@@ -26,6 +26,7 @@ final class TaskController {
     let resultReporter: any ToolResultReporting
     let checkpointReporter: any TaskCheckpointReporting
     let serverTaskClient: (any ServerTaskServing)?
+    let deviceToolExecutor: any DeviceToolExecuting
     let calendarImporter: (any TravelCalendarImporting)?
     let backgroundCoordinator: any AgentBackgroundCoordinating
     let executionRetryPolicy: ToolExecutionRetryPolicy
@@ -34,6 +35,8 @@ final class TaskController {
     private var recoveringTaskIDs: Set<UUID> = []
     @ObservationIgnored
     var serverPollingTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    var pendingDeviceToolResults: [String: DeviceToolExecutionResult] = [:]
     @ObservationIgnored
     var onAssistantFollowUp: ((AssistantFollowUp) -> Void)?
 
@@ -56,6 +59,7 @@ final class TaskController {
         resultReporter: any ToolResultReporting = DisabledToolResultReporter(),
         checkpointReporter: any TaskCheckpointReporting = DisabledTaskCheckpointReporter(),
         serverTaskClient: (any ServerTaskServing)? = nil,
+        deviceToolExecutor: any DeviceToolExecuting = DisabledDeviceToolExecutor(),
         calendarImporter: (any TravelCalendarImporting)? = nil,
         backgroundCoordinator: any AgentBackgroundCoordinating = DisabledAgentBackgroundCoordinator(),
         executionRetryPolicy: ToolExecutionRetryPolicy = .standard,
@@ -67,6 +71,7 @@ final class TaskController {
         self.resultReporter = resultReporter
         self.checkpointReporter = checkpointReporter
         self.serverTaskClient = serverTaskClient
+        self.deviceToolExecutor = deviceToolExecutor
         self.calendarImporter = calendarImporter
         self.backgroundCoordinator = backgroundCoordinator
         self.executionRetryPolicy = executionRetryPolicy
@@ -89,6 +94,7 @@ final class TaskController {
             serverTaskClient: URLSessionServerTaskClient(
                 baseURL: AppConfiguration.modelProxyBaseURL
             ),
+            deviceToolExecutor: MapKitDeviceToolExecutor(),
             calendarImporter: EventKitTravelCalendarImporter(),
             backgroundCoordinator: ContinuedProcessingBackgroundCoordinator()
         )

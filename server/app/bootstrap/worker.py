@@ -16,6 +16,7 @@ from app.tasks.models import ArtifactDraft, ServerTask, TaskOutcome
 from app.tasks.runner import ServerTaskRunner
 from app.tasks.stores.postgres import PostgreSQLServerTaskStore
 from app.tools.travel.maps import AppleMapsSearchClient
+from app.tools.travel.device_maps import DeviceMapKitSearchClient
 from app.tools.travel.profile import make_travel_profile
 from app.tools.travel.tools import ItinerarySubmitTool, PlacesSearchTool
 
@@ -49,8 +50,12 @@ async def run_worker() -> None:
     journal = PostgreSQLAgentLoopJournal(settings.database_url)
     model = QwenAgentLoopModel(settings)
     maps = AppleMapsSearchClient(settings.apple_maps_token)
+    device_maps = DeviceMapKitSearchClient(
+        store,
+        fallback=maps if settings.apple_maps_token else None,
+    )
     tools = AgentLoopToolRegistry([
-        PlacesSearchTool(maps),
+        PlacesSearchTool(device_maps),
         ItinerarySubmitTool(),
     ])
     loop_handler = AgentLoopTaskHandler(

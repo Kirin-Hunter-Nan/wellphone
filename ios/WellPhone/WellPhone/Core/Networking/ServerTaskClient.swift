@@ -39,6 +39,31 @@ struct ServerTaskSnapshot: Decodable, Equatable, Sendable {
     let artifacts: [Artifact]
 }
 
+struct DeviceToolRequest: Decodable, Equatable, Sendable {
+    let taskId: UUID
+    let toolCallId: String
+    let toolName: String
+    let arguments: [String: JSONValue]
+}
+
+struct DeviceToolExecutionResult: Equatable, Sendable {
+    struct Failure: Equatable, Sendable {
+        let code: String
+        let message: String
+    }
+
+    let result: [String: JSONValue]?
+    let failure: Failure?
+
+    static func completed(_ result: [String: JSONValue]) -> Self {
+        Self(result: result, failure: nil)
+    }
+
+    static func failed(code: String, message: String) -> Self {
+        Self(result: nil, failure: Failure(code: code, message: message))
+    }
+}
+
 protocol ServerTaskServing: Sendable {
     func create(
         conversationID: UUID,
@@ -50,6 +75,22 @@ protocol ServerTaskServing: Sendable {
     func confirm(taskID: UUID) async throws -> ServerTaskSnapshot
     func cancel(taskID: UUID) async throws -> ServerTaskSnapshot
     func get(taskID: UUID) async throws -> ServerTaskSnapshot
+    func pendingDeviceTool(taskID: UUID) async throws -> DeviceToolRequest?
+    func submitDeviceToolResult(
+        taskID: UUID,
+        toolCallID: String,
+        result: DeviceToolExecutionResult
+    ) async throws
+}
+
+extension ServerTaskServing {
+    func pendingDeviceTool(taskID: UUID) async throws -> DeviceToolRequest? { nil }
+
+    func submitDeviceToolResult(
+        taskID: UUID,
+        toolCallID: String,
+        result: DeviceToolExecutionResult
+    ) async throws {}
 }
 
 struct URLSessionServerTaskClient: ServerTaskServing {
@@ -91,6 +132,61 @@ struct URLSessionServerTaskClient: ServerTaskServing {
         try await send(method: "GET", path: ["v1", "tasks", taskID.uuidString.lowercased()])
     }
 
+    func pendingDeviceTool(taskID: UUID) async throws -> DeviceToolRequest? {
+        var request = URLRequest(url: endpoint([
+            "v1", "tasks", taskID.uuidString.lowercased(), "device-tools", "pending",
+        ]))
+        request.httpMethod = "GET"
+        request.timeoutInterval = 30
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ServerTaskClientError.requestFailed
+        }
+        if http.statusCode == 204 { return nil }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ServerTaskClientError.requestFailed
+        }
+        return try decoder().decode(DeviceToolRequest.self, from: data)
+    }
+
+    func submitDeviceToolResult(
+        taskID: UUID,
+        toolCallID: String,
+        result: DeviceToolExecutionResult
+    ) async throws {
+        struct ErrorBody: Encodable {
+            let code: String
+            let message: String
+        }
+        struct Body: Encodable {
+            let requestId: String
+            let protocolVersion = "1.0"
+            let toolCallId: String
+            let status: String
+            let result: [String: JSONValue]?
+            let error: ErrorBody?
+        }
+        let body = Body(
+            requestId: "device-tool-result-\(taskID.uuidString.lowercased())-\(toolCallID.prefix(100))",
+            toolCallId: toolCallID,
+            status: result.failure == nil ? "completed" : "failed",
+            result: result.result,
+            error: result.failure.map { ErrorBody(code: $0.code, message: $0.message) }
+        )
+        var request = URLRequest(url: endpoint([
+            "v1", "tasks", taskID.uuidString.lowercased(), "device-tools", "results",
+        ]))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            throw ServerTaskClientError.requestFailed
+        }
+    }
+
     private func send<Body: Encodable>(method: String, path: [String], body: Body) async throws -> ServerTaskSnapshot {
         var request = URLRequest(url: endpoint(path))
         request.httpMethod = method
@@ -116,9 +212,13 @@ struct URLSessionServerTaskClient: ServerTaskServing {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ServerTaskClientError.requestFailed
         }
+        return try decoder().decode(ServerTaskSnapshot.self, from: data)
+    }
+
+    private func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(ServerTaskSnapshot.self, from: data)
+        return decoder
     }
 }
 

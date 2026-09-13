@@ -173,6 +173,31 @@ class ToolResultSubmission(BaseModel):
         )
 
 
+class DeviceToolResultSubmission(BaseModel):
+    """Result produced by a headless native capability on the phone."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    request_id: str = Field(alias="requestId", min_length=1, max_length=200)
+    protocol_version: Literal["1.0"] = Field(alias="protocolVersion")
+    tool_call_id: str = Field(alias="toolCallId", min_length=1)
+    status: Literal["completed", "failed"]
+    result: dict[str, object] | None = None
+    error: ToolResultError | None = None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "DeviceToolResultSubmission":
+        if self.status == "completed" and self.result is None:
+            raise ValueError("A completed device Tool result requires result data")
+        if self.status == "failed" and self.error is None:
+            raise ValueError("A failed device Tool result requires error data")
+        if self.status == "failed" and self.result is not None:
+            raise ValueError("A failed device Tool result must not include result data")
+        if self.status != "failed" and self.error is not None:
+            raise ValueError("Only failed device Tool results may include error data")
+        return self
+
+
 class TaskCheckpointSubmission(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 

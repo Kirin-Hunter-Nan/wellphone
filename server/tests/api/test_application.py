@@ -179,6 +179,83 @@ def test_server_task_lifecycle_endpoints() -> None:
     assert fetched.json()["status"] == "queued"
 
 
+def test_phone_can_claim_and_complete_a_pending_device_tool() -> None:
+    from app.tasks.stores.memory import InMemoryServerTaskStore
+
+    task_store = InMemoryServerTaskStore()
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+        server_task_store=task_store,
+    )
+    conversation_id = "39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7"
+
+    with TestClient(app) as client:
+        created = client.post(
+            f"/v1/conversations/{conversation_id}/tasks",
+            json={
+                "capability": "travel.plan",
+                "title": "规划上海旅行",
+                "input": {},
+            },
+        ).json()
+        task_id = UUID(created["id"])
+        asyncio.run(task_store.enqueue_device_tool(
+            task_id,
+            "search_1",
+            "mapkit.local-search",
+            {"query": "上海博物馆", "destination": "上海"},
+        ))
+        pending = client.get(f"/v1/tasks/{task_id}/device-tools/pending")
+        result = client.post(
+            f"/v1/tasks/{task_id}/device-tools/results",
+            json={
+                "requestId": "result_search_1",
+                "protocolVersion": "1.0",
+                "toolCallId": "search_1",
+                "status": "completed",
+                "result": {
+                    "name": "上海博物馆（人民广场馆）",
+                    "map_url": "https://maps.apple.com/place?place-id=test",
+                    "verified": True,
+                    "source": "mapkit-native",
+                },
+            },
+        )
+        empty = client.get(f"/v1/tasks/{task_id}/device-tools/pending")
+
+    assert pending.status_code == 200
+    assert pending.json()["toolName"] == "mapkit.local-search"
+    assert result.status_code == 200
+    assert result.json()["status"] == "completed"
+    assert empty.status_code == 204
+
+
+def test_failed_device_tool_submission_cannot_smuggle_a_completed_result() -> None:
+    app = create_app(
+        settings=settings(),
+        provider=FakeProvider(),
+        result_store=InMemoryToolResultStore(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/tasks/39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7/device-tools/results",
+            json={
+                "requestId": "invalid_failed_result",
+                "protocolVersion": "1.0",
+                "toolCallId": "search_1",
+                "status": "failed",
+                "result": {"verified": True},
+                "error": {"code": "mapkit_failed", "message": "failed"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
 def test_health_and_message_stream() -> None:
     provider = FakeProvider()
     app = create_app(

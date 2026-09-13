@@ -10,9 +10,11 @@
 
 `travel_plan` 同样只是聊天阶段的意图入口，并映射为 `travel.plan` 长任务。旅行规划本身没有专属 Loop：worker 注册唯一的通用 `AgentLoopTaskHandler`，其内部使用 LangGraph `StateGraph` 的条件边在模型节点、Tool 节点与结束状态之间路由。`travel.plan` Profile 只提供系统提示词、允许使用的 Tool、循环预算、进度步骤和最终结果构建器。目前的原子 Tool 是 `places_search` 与 `itinerary_submit`；后续能力通过新增或复用 Tool、再增加轻量 Profile 接入，不需要复制一套业务循环。
 
+`places_search` 默认不再依赖 Apple Maps Server token。worker 将模型 Tool Call 以 `(task_id, tool_call_id)` 幂等写入 PostgreSQL `device_tool_calls`，iPhone 的现有任务轮询在 `BGContinuedProcessingTask` 租约内领取 `mapkit.local-search`，通过无界面的 `MKLocalSearch` 查询后回传结构化结果。服务端等待该结果并把它作为原 Tool Observation 继续 Agent Loop；进程重启会复用同一待处理调用。只有目标城市匹配、候选唯一且置信度达标的结果才标记为 `verified`，`itinerary_submit` 也会再次拒绝任何未验证地点。配置 `APPLE_MAPS_TOKEN` 时，它只是在设备 90 秒未返回后的可选备用路径。
+
 服务端每轮模型决策、Tool Observation、状态更新与最终输出都写入 PostgreSQL `agent_loop_events`。worker 租约过期或进程重启后，会恢复消息与工具状态；若中断发生在模型 Tool Call 已落库而结果尚未落库之间，恢复流程会继续执行该待处理调用，而不是重新开始整项规划。
 
-旅行 Profile 最多允许 12 次模型决策，任务进度展示当前轮次与上限。LangGraph 的 recursion limit 提供第二层循环保护；同一 Tool 错误连续出现三次时通过条件边提前结束，并被标记为不可重试失败。Qwen 若把应为对象的顶层 Tool 参数编码成嵌套 JSON 字符串，Registry 只在首次 Schema 校验失败后尝试解包并重新校验。
+旅行 Profile 最多允许 12 次模型决策，任务进度展示当前轮次与上限。LangGraph 的 recursion limit 提供第二层循环保护；相同 Tool、相同语义参数和相同错误连续出现三次时通过条件边提前结束，并被标记为不可重试失败。不同地点即使返回相同错误码也不会互相累计。Qwen 若把应为对象的顶层 Tool 参数编码成嵌套 JSON 字符串，Registry 只在首次 Schema 校验失败后尝试解包并重新校验。
 
 ```text
 Chat intent Tool -> capability -> immediate server task queue
@@ -36,6 +38,8 @@ Qwen / future provider
 ```
 
 Python 后端负责模型鉴权、模型提示词、厂商 Tool Schema、流式响应解析，以及厂商 Tool 名称到 capability 的映射。Swift 客户端负责系统权限、本地任务状态、系统 API 调用与结果验证。模型供应商变化不应要求修改 Runtime Harness。
+
+旅行长任务中的系统地图查询也遵循这条边界：服务端负责决定搜索什么并持久化请求，iPhone 负责调用原生 MapKit。该执行器不展示 `MKMapView`、不调用 `openInMaps`，也不读取用户当前位置，因此不会切换画面、抢焦点或触发定位授权。MapKit 节流错误在设备端有限退避后才返回，服务端不会把仅生成了地图链接的结果视为核对成功。
 
 每轮聊天请求也受运行外壳保护。iOS 将稳定的 `requestId` 保存到发起该轮回复的用户消息中，重试时复用；Python 服务端以 PostgreSQL 租约领取请求并保存完整 WellPhone SSE 事件。断流清理独立于 HTTP 请求的取消域，短暂并发由客户端按 `Retry-After` 自动重试。完成后的重复请求只回放原始事件，不重复访问模型。回放中的 Tool Call 在客户端按 `(conversationID, toolCallID)` 去重，因此不会产生第二张任务卡片。
 
@@ -94,6 +98,8 @@ AgentToolRequest
 5. 只有验证成功后，任务才能标记为 completed。
 6. 执行失败或验证失败必须保留 failed 状态，不得由模型宣称成功。
 7. 具有写入副作用的 Tool 只有在稳定幂等键、执行前查重和中断恢复均已实现后，才能声明支持自动重试。
+
+显式请求的旅行日历写入属于 `travel.plan` 的必需设备收尾阶段，而不是可选展示操作。服务端行程产物完成后，客户端先保持任务为 `running/verifying`，使用任务 UUID 与事件序号生成稳定 EventKit 标记，恢复已有事件并补齐缺失事件，再逐项回读核对日历、标题、起止时间、时区、地点、链接和备注。只有全部事件验证成功后任务才进入 `completed`；写入或验证失败会令整体任务进入 `failed`，且不得发送完成通知或回传 `verified` Tool Result。
 
 ## 目录职责
 

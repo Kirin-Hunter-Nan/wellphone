@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 from uuid import UUID, uuid4
@@ -11,6 +12,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.tasks.models import (
+    DeviceToolCall,
+    DeviceToolConflictError,
     ServerTask,
     ServerTaskArtifact,
     ServerTaskCreate,
@@ -67,6 +70,25 @@ class PostgreSQLServerTaskStore:
                     payload_json JSONB, storage_reference TEXT, created_at TIMESTAMPTZ NOT NULL
                 )
             """)
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS device_tool_calls (
+                    task_id UUID NOT NULL REFERENCES server_tasks(id) ON DELETE CASCADE,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments_json JSONB NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json JSONB,
+                    error_code TEXT,
+                    error_message TEXT,
+                    requested_at TIMESTAMPTZ NOT NULL,
+                    completed_at TIMESTAMPTZ,
+                    PRIMARY KEY (task_id, tool_call_id)
+                )
+            """)
+            await connection.execute("""
+                CREATE INDEX IF NOT EXISTS device_tool_calls_pending_idx
+                ON device_tool_calls (task_id, status, requested_at)
+            """)
 
     async def is_healthy(self) -> bool:
         try:
@@ -105,7 +127,7 @@ class PostgreSQLServerTaskStore:
             return await self._read_task(connection, task_id)
 
     async def list(self, conversation_id: UUID) -> list[ServerTask]:
-        async with self._pool.connection(row_factory=dict_row) as connection:
+        async with self._dict_connection() as connection:
             rows = await (await connection.execute(
                 "SELECT * FROM server_tasks WHERE conversation_id = %s ORDER BY created_at DESC",
                 (conversation_id,),
@@ -214,6 +236,106 @@ class PostgreSQLServerTaskStore:
                 WHERE id=%s AND lease_owner=%s
             """, (status, phase, detail, message, retry_delay_seconds, task_id, worker_id))
 
+    async def enqueue_device_tool(
+        self, task_id: UUID, tool_call_id: str, tool_name: str,
+        arguments: dict[str, object],
+    ) -> DeviceToolCall:
+        now = datetime.now(timezone.utc)
+        encoded_arguments = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+        async with self._dict_connection() as connection:
+            await connection.execute("""
+                INSERT INTO device_tool_calls (
+                    task_id, tool_call_id, tool_name, arguments_json,
+                    status, requested_at
+                ) VALUES (%s, %s, %s, %s::jsonb, 'pending', %s)
+                ON CONFLICT (task_id, tool_call_id) DO NOTHING
+            """, (task_id, tool_call_id, tool_name, encoded_arguments, now))
+            row = await (await connection.execute("""
+                SELECT * FROM device_tool_calls
+                WHERE task_id=%s AND tool_call_id=%s
+            """, (task_id, tool_call_id))).fetchone()
+            if row is None:
+                raise KeyError(f"Task {task_id} does not exist")
+            call = self._device_tool_from_row(row)
+            if call.tool_name != tool_name or call.arguments != arguments:
+                raise DeviceToolConflictError(
+                    "Device Tool call id identifies different arguments"
+                )
+            return call
+
+    async def get_pending_device_tool(self, task_id: UUID) -> DeviceToolCall | None:
+        async with self._dict_connection() as connection:
+            row = await (await connection.execute("""
+                SELECT * FROM device_tool_calls
+                WHERE task_id=%s AND status='pending'
+                ORDER BY requested_at LIMIT 1
+            """, (task_id,))).fetchone()
+            return self._device_tool_from_row(row) if row else None
+
+    async def get_device_tool(
+        self, task_id: UUID, tool_call_id: str,
+    ) -> DeviceToolCall | None:
+        async with self._dict_connection() as connection:
+            row = await (await connection.execute("""
+                SELECT * FROM device_tool_calls
+                WHERE task_id=%s AND tool_call_id=%s
+            """, (task_id, tool_call_id))).fetchone()
+            return self._device_tool_from_row(row) if row else None
+
+    async def submit_device_tool_result(
+        self, task_id: UUID, tool_call_id: str, *,
+        result: dict[str, object] | None,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> DeviceToolCall | None:
+        desired_status = "completed" if result is not None else "failed"
+        encoded_result = (
+            json.dumps(result, ensure_ascii=False, sort_keys=True)
+            if result is not None else None
+        )
+        async with self._dict_connection() as connection:
+            row = await (await connection.execute("""
+                SELECT * FROM device_tool_calls
+                WHERE task_id=%s AND tool_call_id=%s FOR UPDATE
+            """, (task_id, tool_call_id))).fetchone()
+            if row is None:
+                return None
+            call = self._device_tool_from_row(row)
+            if call.status != "pending":
+                if (
+                    call.status != desired_status
+                    or call.result != result
+                    or call.error_code != error_code
+                    or call.error_message != error_message
+                ):
+                    raise DeviceToolConflictError(
+                        "Device Tool result differs from the persisted result"
+                    )
+                return call
+            row = await (await connection.execute("""
+                UPDATE device_tool_calls
+                SET status=%s, result_json=%s::jsonb, error_code=%s,
+                    error_message=%s, completed_at=NOW()
+                WHERE task_id=%s AND tool_call_id=%s
+                RETURNING *
+            """, (
+                desired_status, encoded_result, error_code, error_message,
+                task_id, tool_call_id,
+            ))).fetchone()
+            assert row is not None
+            return self._device_tool_from_row(row)
+
+    @asynccontextmanager
+    async def _dict_connection(self):
+        """Borrow a pooled connection without leaking its row factory."""
+        async with self._pool.connection() as connection:
+            previous_factory = connection.row_factory
+            connection.row_factory = dict_row
+            try:
+                yield connection
+            finally:
+                connection.row_factory = previous_factory
+
     async def _read_task(self, connection, task_id: UUID) -> ServerTask | None:
         previous_factory = connection.row_factory
         connection.row_factory = dict_row
@@ -244,6 +366,21 @@ class PostgreSQLServerTaskStore:
                 contentType=item["content_type"], payload=item["payload_json"],
                 storageReference=item["storage_reference"], createdAt=item["created_at"],
             ) for item in artifacts],
+        )
+
+    @staticmethod
+    def _device_tool_from_row(row: dict) -> DeviceToolCall:
+        return DeviceToolCall(
+            taskId=row["task_id"],
+            toolCallId=row["tool_call_id"],
+            toolName=row["tool_name"],
+            arguments=row["arguments_json"],
+            status=row["status"],
+            result=row["result_json"],
+            errorCode=row["error_code"],
+            errorMessage=row["error_message"],
+            requestedAt=row["requested_at"],
+            completedAt=row["completed_at"],
         )
 
     async def close(self) -> None:

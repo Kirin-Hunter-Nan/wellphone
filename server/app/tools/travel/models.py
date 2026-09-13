@@ -40,6 +40,12 @@ class AppleMapsPlace(BaseModel):
     longitude: float | None = None
     map_url: str
     verified: bool
+    place_id: str | None = None
+    category: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    source: str | None = None
+    verification_error: str | None = None
+    candidate_count: int | None = Field(default=None, ge=0)
 
 
 class PlacesSearchArguments(BaseModel):

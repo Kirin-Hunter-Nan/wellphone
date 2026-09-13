@@ -196,8 +196,11 @@ class AgentLoopEngine:
             if event.event_type == "tool.result":
                 tool_call_count += 1
                 observation = _message_observation(message)
+                arguments = event.payload.get("arguments")
                 current_signature = _failure_signature(
-                    str(event.payload.get("toolName") or ""), observation
+                    str(event.payload.get("toolName") or ""),
+                    arguments if isinstance(arguments, dict) else {},
+                    observation,
                 )
                 if current_signature is None:
                     failure_signature, identical_failure_count = None, 0
@@ -244,6 +247,7 @@ class AgentLoopEngine:
                 profile.steps,
                 min(1, len(profile.steps) - 1),
             )
+            context.tool_call_id = call.id
             result = await self._tools.execute(call, context, profile.allowed_tools)
             executed_count += 1
             content = json.dumps(
@@ -259,6 +263,7 @@ class AgentLoopEngine:
             payload: dict[str, object] = {
                 "toolCallId": call.id,
                 "toolName": call.name,
+                "arguments": call.arguments,
                 "message": message,
                 "stateUpdates": result.state_updates,
             }
@@ -266,7 +271,9 @@ class AgentLoopEngine:
                 payload["finalOutput"] = result.final_output
             await self._journal.append(task.id, "tool.result", payload)
 
-            current_signature = _failure_signature(call.name, result.observation)
+            current_signature = _failure_signature(
+                call.name, call.arguments, result.observation
+            )
             if current_signature is None:
                 failure_signature, identical_failure_count = None, 0
             elif current_signature == failure_signature:
@@ -342,7 +349,9 @@ def _message_observation(message: object) -> dict[str, object]:
     return observation if isinstance(observation, dict) else {}
 
 def _failure_signature(
-    tool_name: str, observation: dict[str, object]
+    tool_name: str,
+    arguments: dict[str, object],
+    observation: dict[str, object],
 ) -> str | None:
     if observation.get("ok") is not False:
         return None
@@ -358,5 +367,8 @@ def _failure_signature(
             "issues": observation.get("issues"),
         }
     return tool_name + ":" + json.dumps(
-        detail, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        {"arguments": arguments, "failure": detail},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )

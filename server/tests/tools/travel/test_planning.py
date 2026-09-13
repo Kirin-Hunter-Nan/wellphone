@@ -28,7 +28,7 @@ from app.tools.travel.planning import (
 
 class FakeMaps:
     async def search(
-        self, query: str, destination: str, language: str = "zh-CN"
+        self, query: str, destination: str, language: str = "zh-CN", **_context
     ) -> AppleMapsPlace:
         return AppleMapsPlace(
             name=query,
