@@ -77,3 +77,53 @@ def test_travel_calendar_consent_is_explicit_and_defaults_to_false() -> None:
 
     assert default_request.arguments["addToCalendar"] is False
     assert explicit_request.arguments["addToCalendar"] is True
+
+
+def test_business_trip_normalizes_fixed_commitments_and_calendar_consent() -> None:
+    request = ModelToolCatalog().normalize(
+        model_name="business_trip_plan",
+        tool_call_id="call_business_trip",
+        arguments_json=json.dumps({
+            "destination": "上海",
+            "startDate": "2026-10-01",
+            "endDate": "2026-10-02",
+            "timeZone": "Asia/Shanghai",
+            "commitments": [{
+                "id": "flight-1",
+                "kind": "flight",
+                "title": "MU5101 前往上海",
+                "startAt": "2026-10-01T08:00:00+08:00",
+                "endAt": "2026-10-01T10:15:00+08:00",
+            }],
+            "addToCalendar": True,
+            "addCalendarAlerts": True,
+        }),
+    )
+
+    assert request.capability == "business-trip.plan"
+    assert request.execution_location == "server"
+    assert request.arguments["commitments"][0]["kind"] == "flight"
+    assert request.arguments["addCalendarAlerts"] is True
+
+
+def test_business_trip_uses_search_authorization_not_model_query_syntax() -> None:
+    request = ModelToolCatalog().normalize(
+        model_name="business_trip_plan",
+        tool_call_id="call_business_trip_gmail",
+        arguments_json=json.dumps({
+            "destination": "上海",
+            "startDate": "2026-10-01",
+            "endDate": "2026-10-03",
+            "timeZone": "Asia/Shanghai",
+            "commitments": [],
+            "searchGmail": True,
+            "uploadToDrive": True,
+        }),
+    )
+
+    assert request.arguments["searchGmail"] is True
+    assert request.arguments["gmailQuery"].startswith(
+        "after:2026/04/04 before:2026/10/11"
+    )
+    assert "from:" not in request.arguments["gmailQuery"]
+    assert "to:" not in request.arguments["gmailQuery"]

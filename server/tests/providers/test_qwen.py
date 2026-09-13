@@ -81,6 +81,20 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     assert "choose exactly one outcome" in upstream_body["messages"][0]["content"]
     assert "Asia/Shanghai" in upstream_body["messages"][0]["content"]
     assert "never infer, recalculate" in upstream_body["messages"][0]["content"]
+    assert "The trip origin is optional" in upstream_body["messages"][0]["content"]
+    assert "Never ask for an origin merely" in upstream_body["messages"][0]["content"]
+    assert "Use business_trip_plan" in upstream_body["messages"][0]["content"]
+    assert "Never invent a booking" in upstream_body["messages"][0]["content"]
+    assert "Gmail search operators are an internal Tool detail" in (
+        upstream_body["messages"][0]["content"]
+    )
+    assert "set searchGmail=true" in upstream_body["messages"][0]["content"]
+    assert "Never construct gmailQuery yourself" in (
+        upstream_body["messages"][0]["content"]
+    )
+    assert "never require the user to write after:" in (
+        upstream_body["messages"][0]["content"]
+    )
 
     assert [event["type"] for event in events] == [
         "response.started",

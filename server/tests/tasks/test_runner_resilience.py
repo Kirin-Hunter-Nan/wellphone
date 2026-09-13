@@ -1,5 +1,6 @@
 """Server task lease, retry, cancellation, and idempotency regression tests."""
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -43,6 +44,22 @@ class NeverCalledHandler:
     async def run(self, task: ServerTask, report) -> TaskOutcome:
         self.calls += 1
         return TaskOutcome(summary="unexpected")
+
+
+class BlockingHandler:
+    capability = "test.blocking"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def run(self, task: ServerTask, report) -> TaskOutcome:
+        self.started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
 
 async def create_task(
@@ -141,6 +158,27 @@ async def test_cancelled_task_is_never_claimed_or_executed(anyio_backend) -> Non
     assert cancelled is not None and cancelled.status == "cancelled"
     assert handled is False
     assert handler.calls == 0
+
+
+async def test_running_task_cancellation_releases_worker_promptly(anyio_backend) -> None:
+    store = InMemoryServerTaskStore()
+    created = await create_task(store, "test.blocking")
+    handler = BlockingHandler()
+    runner = ServerTaskRunner(
+        store,
+        [handler],
+        worker_id="worker",
+        lease_seconds=0.15,
+    )
+
+    run = asyncio.create_task(runner.run_once())
+    await handler.started.wait()
+    await store.cancel(created.id)
+
+    assert await asyncio.wait_for(run, timeout=1) is True
+    assert handler.cancelled.is_set()
+    cancelled = await store.get(created.id)
+    assert cancelled is not None and cancelled.status == "cancelled"
 
 
 async def test_tool_call_id_is_idempotent_within_conversation_only(

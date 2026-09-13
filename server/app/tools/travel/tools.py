@@ -28,8 +28,17 @@ class PlacesSearchTool:
         self, arguments: BaseModel, context: LoopToolContext
     ) -> LoopToolResult:
         values = PlacesSearchArguments.model_validate(arguments)
-        requested = TravelPlanInput.model_validate(context.task.input)
-        requested_destination = requested.destination.casefold()
+        requested_destination_value = context.task.input.get("destination")
+        if not isinstance(requested_destination_value, str) or not requested_destination_value.strip():
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "missing_task_destination",
+                    "message": "Task input does not contain a destination",
+                },
+            })
+        requested_destination_value = requested_destination_value.strip()
+        requested_destination = requested_destination_value.casefold()
         supplied_destination = values.destination.casefold()
         if (
             requested_destination not in supplied_destination
@@ -39,12 +48,12 @@ class PlacesSearchTool:
                 "ok": False,
                 "error": {
                     "code": "destination_mismatch",
-                    "message": f"Search destination must remain {requested.destination}",
+                    "message": f"Search destination must remain {requested_destination_value}",
                 },
             })
         place = await self._maps.search(
             values.query,
-            requested.destination,
+            requested_destination_value,
             values.language,
             task_id=context.task.id,
             tool_call_id=context.tool_call_id,

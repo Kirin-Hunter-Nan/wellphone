@@ -13,6 +13,34 @@ import Testing
 struct WellPhoneTests {
 
     @Test @MainActor
+    func assistantMarkdownPreservesSelectableVisualHierarchy() {
+        let markdown = """
+        # 上海商务出差计划
+
+        已完成 4 项固定安排。
+
+        ## 10 月 1 日
+
+        - **14:00–15:00 客户会议**
+          上海市浦东新区
+        - [ ] 携带会议材料
+        """
+
+        let blocks = AssistantMarkdownRenderer.blocks(from: markdown)
+
+        #expect(blocks.map(\.style) == [
+            .title, .paragraph, .heading, .listItem, .listItem,
+        ])
+        #expect(blocks[0].source == "上海商务出差计划")
+        #expect(blocks[3].source.contains("上海市浦东新区"))
+        #expect(blocks[4].source == "☐ 携带会议材料")
+        #expect(
+            String(AssistantMarkdownRenderer.attributedString(from: markdown).characters)
+                .contains("客户会议")
+        )
+    }
+
+    @Test @MainActor
     func demoGatewayStreamsAReply() async throws {
         let gateway = DemoModelGateway()
         let prompt = [ChatPromptMessage(role: .user, content: "测试消息")]
@@ -652,9 +680,17 @@ struct WellPhoneTests {
             executionLocation: .server,
             argumentsJSON: #"{"destination":"上海","addToCalendar":true}"#
         )
+        let businessTrip = AgentTask(
+            conversationID: conversationID,
+            title: "上海商务出差并添加日历",
+            capability: "business-trip.plan",
+            executionLocation: .server,
+            argumentsJSON: #"{"destination":"上海","addToCalendar":true}"#
+        )
 
         #expect(!controller.calendarWasExplicitlyRequested(for: implicit))
         #expect(controller.calendarWasExplicitlyRequested(for: explicit))
+        #expect(controller.calendarWasExplicitlyRequested(for: businessTrip))
     }
 
     @Test @MainActor
@@ -803,6 +839,23 @@ struct WellPhoneTests {
             query: "% Arabica 上海店",
             candidate: "%Arabica"
         ) < 0.97)
+    }
+
+    @Test @MainActor
+    func googleWorkspaceToolFailsClosedWithoutOAuthConfiguration() async {
+        let executor = GoogleWorkspaceDeviceToolExecutor(clientIDOverride: "")
+        let result = await executor.execute(DeviceToolRequest(
+            taskId: UUID(),
+            toolCallId: "gmail_1",
+            toolName: "google.gmail.search",
+            arguments: [
+                "query": .string("after:2026/09/01 上海 出差"),
+                "maxResults": .number(12),
+            ]
+        ))
+
+        #expect(result.result == nil)
+        #expect(result.failure?.code == "google_oauth_not_configured")
     }
 
     @Test @MainActor

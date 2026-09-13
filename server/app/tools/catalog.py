@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from app.api.protocol import ToolRequest
+from app.tools.business_trip.models import BusinessTripInput
 
 
 class ToolCatalogError(ValueError):
@@ -108,6 +109,25 @@ class ModelToolCatalog:
                 "using this tool. The app will start the task immediately. Set "
                 "addToCalendar=true only when the user "
                 "explicitly asks to add the finished itinerary to their calendar.",
+                "server",
+            ),
+            "business_trip_plan": (
+                "business-trip.plan",
+                BusinessTripInput,
+                "Start a multi-step business-trip task when the user asks to organize "
+                "bookings, meetings, transportation, or preparation around a work trip. "
+                "Extract every fixed booking or meeting supplied in text or images into "
+                "commitments without changing its observed title or time. Destination, exact "
+                "start and end dates, and an IANA time zone are required. Supply at least one "
+                "commitment, or set searchGmail=true only when the user explicitly asks WellPhone "
+                "to search Gmail for the booking evidence. Never construct gmailQuery or require "
+                "Gmail search syntax from the user; the server derives an immutable, narrowly "
+                "scoped query from the trip. The task checks conflicts, "
+                "verifies places, fills safe gaps, and creates durable artifacts. Set "
+                "addToCalendar=true only when the user explicitly requests calendar changes. "
+                "Set addCalendarAlerts=true only when the user also explicitly requests alerts. "
+                "Set uploadToDrive=true only when the user explicitly requests a Google Drive "
+                "upload; only include driveFolderId when the user supplied that exact folder ID.",
                 "server",
             ),
         }

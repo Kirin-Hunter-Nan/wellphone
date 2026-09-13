@@ -1,0 +1,1 @@
+"""Business-trip Tool tests."""

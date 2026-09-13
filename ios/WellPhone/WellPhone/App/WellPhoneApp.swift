@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+@preconcurrency import GoogleSignIn
 
 @main
 struct WellPhoneApp: App {
@@ -64,6 +65,9 @@ struct WellPhoneApp: App {
                         await taskController.flushPendingCheckpoints()
                         await taskController.flushPendingResultReports()
                     }
+                }
+                .onOpenURL { url in
+                    _ = GIDSignIn.sharedInstance.handle(url)
                 }
         }
         .modelContainer(sharedModelContainer)

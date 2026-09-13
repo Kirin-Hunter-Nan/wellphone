@@ -248,6 +248,25 @@ final class MapKitDeviceToolExecutor: DeviceToolExecuting {
 }
 
 @MainActor
+final class WellPhoneDeviceToolExecutor: DeviceToolExecuting {
+    private let mapKit = MapKitDeviceToolExecutor()
+    private let google = GoogleWorkspaceDeviceToolExecutor()
+
+    func execute(_ request: DeviceToolRequest) async -> DeviceToolExecutionResult {
+        if request.toolName == "mapkit.local-search" {
+            return await mapKit.execute(request)
+        }
+        if request.toolName.hasPrefix("google.") {
+            return await google.execute(request)
+        }
+        return .failed(
+            code: "unsupported_device_tool",
+            message: "手机不支持设备工具：\(request.toolName)"
+        )
+    }
+}
+
+@MainActor
 final class DisabledDeviceToolExecutor: DeviceToolExecuting {
     func execute(_ request: DeviceToolRequest) async -> DeviceToolExecutionResult {
         .failed(

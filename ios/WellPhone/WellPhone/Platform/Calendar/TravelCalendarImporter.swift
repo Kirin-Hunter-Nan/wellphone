@@ -6,9 +6,12 @@ private struct TravelCalendarPayload: Decodable {
         let title: String
         let startLocal: String
         let endLocal: String
+        let startAt: String?
+        let endAt: String?
         let location: String?
         let url: String?
         let notes: String?
+        let alertsBeforeMinutes: [Int]?
     }
 
     let timeZone: String?
@@ -41,10 +44,15 @@ final class EventKitTravelCalendarImporter: TravelCalendarImporting {
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        let absoluteFormatter = ISO8601DateFormatter()
+        absoluteFormatter.formatOptions = [.withInternetDateTime]
 
         let prepared = try plan.events.enumerated().map { index, item in
-            guard let start = formatter.date(from: item.startLocal),
-                  let end = formatter.date(from: item.endLocal) else {
+            let start = item.startAt.flatMap(absoluteFormatter.date(from:))
+                ?? formatter.date(from: item.startLocal)
+            let end = item.endAt.flatMap(absoluteFormatter.date(from:))
+                ?? formatter.date(from: item.endLocal)
+            guard let start, let end else {
                 throw TravelCalendarImportError.invalidDate
             }
             guard end > start else { throw TravelCalendarImportError.invalidDate }
@@ -53,6 +61,10 @@ final class EventKitTravelCalendarImporter: TravelCalendarImporting {
                 key: idempotencyKey,
                 index: index
             )
+            let alerts = item.alertsBeforeMinutes ?? []
+            guard alerts.allSatisfy({ (0...10_080).contains($0) }) else {
+                throw TravelCalendarImportError.invalidAlert
+            }
             return PreparedTravelCalendarEvent(
                 title: item.title,
                 start: start,
@@ -61,6 +73,7 @@ final class EventKitTravelCalendarImporter: TravelCalendarImporting {
                 location: item.location,
                 url: idempotencyURL,
                 notes: item.notes,
+                alertsBeforeMinutes: alerts,
                 idempotencyKey: idempotencyURL.absoluteString
             )
         }
@@ -100,6 +113,9 @@ final class EventKitTravelCalendarImporter: TravelCalendarImporting {
             event.location = draft.location
             event.url = draft.url
             event.notes = draft.notes
+            for minutes in draft.alertsBeforeMinutes {
+                event.addAlarm(EKAlarm(relativeOffset: -TimeInterval(minutes * 60)))
+            }
             try store.save(event, span: .thisEvent, commit: false)
             candidates[draft.idempotencyKey] = event
         }
@@ -155,6 +171,14 @@ final class EventKitTravelCalendarImporter: TravelCalendarImporting {
             && event.location == draft.location
             && event.url == draft.url
             && event.notes == draft.notes
+            && alarmOffsets(for: event) == draft.alertsBeforeMinutes.sorted()
+    }
+
+    private func alarmOffsets(for event: EKEvent) -> [Int] {
+        (event.alarms ?? []).compactMap { alarm in
+            guard alarm.absoluteDate == nil else { return nil }
+            return Int((-alarm.relativeOffset / 60).rounded())
+        }.sorted()
     }
 
     private func idempotencyURL(
@@ -188,6 +212,7 @@ private struct PreparedTravelCalendarEvent {
     let location: String?
     let url: URL?
     let notes: String?
+    let alertsBeforeMinutes: [Int]
     let idempotencyKey: String
 }
 
@@ -196,6 +221,7 @@ enum TravelCalendarImportError: LocalizedError {
     case accessDenied
     case noWritableCalendar
     case invalidDate
+    case invalidAlert
     case duplicateIdempotencyMarker
     case conflictingExistingEvent
     case verificationFailed
@@ -206,6 +232,7 @@ enum TravelCalendarImportError: LocalizedError {
         case .accessDenied: "没有获得日历访问权限。"
         case .noWritableCalendar: "没有可写入的系统日历。"
         case .invalidDate: "行程中包含无法识别的日期。"
+        case .invalidAlert: "日历提醒时间超出允许范围。"
         case .duplicateIdempotencyMarker: "日历中存在重复的任务事件，无法安全确认结果。"
         case .conflictingExistingEvent: "日历中已存在同一任务的事件，但内容与本次行程不一致。"
         case .verificationFailed: "日历事件写入后无法回读验证。"

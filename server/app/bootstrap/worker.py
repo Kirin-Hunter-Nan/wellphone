@@ -15,6 +15,13 @@ from app.agent.tools import AgentLoopToolRegistry
 from app.tasks.models import ArtifactDraft, ServerTask, TaskOutcome
 from app.tasks.runner import ServerTaskRunner
 from app.tasks.stores.postgres import PostgreSQLServerTaskStore
+from app.tools.business_trip.profile import make_business_trip_profile
+from app.tools.business_trip.device_google import DeviceGoogleWorkspaceClient
+from app.tools.business_trip.tools import (
+    BusinessTripCommitmentsLockTool,
+    BusinessTripSubmitTool,
+    GmailSearchTool,
+)
 from app.tools.travel.maps import AppleMapsSearchClient
 from app.tools.travel.device_maps import DeviceMapKitSearchClient
 from app.tools.travel.profile import make_travel_profile
@@ -54,13 +61,17 @@ async def run_worker() -> None:
         store,
         fallback=maps if settings.apple_maps_token else None,
     )
+    google = DeviceGoogleWorkspaceClient(store)
     tools = AgentLoopToolRegistry([
+        GmailSearchTool(google),
+        BusinessTripCommitmentsLockTool(),
         PlacesSearchTool(device_maps),
         ItinerarySubmitTool(),
+        BusinessTripSubmitTool(google),
     ])
     loop_handler = AgentLoopTaskHandler(
         AgentLoopEngine(model, tools, journal),
-        [make_travel_profile()],
+        [make_travel_profile(), make_business_trip_profile()],
     )
     await store.initialize()
     await journal.initialize()
