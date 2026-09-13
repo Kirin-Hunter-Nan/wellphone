@@ -138,6 +138,88 @@ def test_validation_reports_dates_pace_overlap_and_unsearched_places_together() 
     assert sum("call places_search" in issue for issue in issues) == 4
 
 
+def test_validation_rejects_a_place_that_was_searched_but_not_verified() -> None:
+    unverified = {
+        "name": "上海博物馆",
+        "map_url": "https://maps.apple.com/search?query=test",
+        "verified": False,
+    }
+
+    issues = validate_plan(
+        plan(),
+        travel_input(),
+        {"places": {"上海博物馆": unverified}},
+    )
+
+    assert issues == [
+        "places_search must verify 上海博物馆 before submitting"
+    ]
+
+
+def test_validation_matches_mapkit_names_across_query_alias_formatting() -> None:
+    current_plan = plan(days=[{
+        "date": "2026-10-01",
+        "theme": "文化漫步",
+        "items": [
+            {
+                "time": "09:00",
+                "name": "上海博物馆(人民广场馆)",
+                "durationMinutes": 120,
+            },
+            {
+                "time": "13:00",
+                "name": "龙美术馆(西岸馆)",
+                "durationMinutes": 120,
+            },
+            {
+                "time": "17:00",
+                "name": "田子坊泰康路210弄",
+                "durationMinutes": 90,
+            },
+        ],
+    }])
+    places = {
+        "上海博物馆 人民广场": {
+            "name": "上海博物馆（人民广场馆）",
+            "verified": True,
+        },
+        "龙美术馆 西岸馆": {
+            "name": "龙美术馆（西岸馆）",
+            "verified": True,
+        },
+        "田子坊 泰康路": {
+            "name": "田子坊",
+            "verified": True,
+        },
+    }
+
+    issues = validate_plan(
+        current_plan,
+        travel_input(),
+        {"places": places},
+    )
+
+    assert issues == []
+
+
+def test_validation_does_not_fuzzily_match_a_short_generic_alias() -> None:
+    issues = validate_plan(
+        plan(days=[{
+            "date": "2026-10-01",
+            "theme": "咖啡",
+            "items": [{
+                "time": "09:00",
+                "name": "咖啡博物馆",
+                "durationMinutes": 60,
+            }],
+        }]),
+        travel_input(),
+        {"places": {"咖啡": {"name": "另一家咖啡店", "verified": True}}},
+    )
+
+    assert issues == ["call places_search for 咖啡博物馆 before submitting"]
+
+
 async def test_submit_tool_enriches_only_after_all_places_are_verified(
     anyio_backend,
 ) -> None:

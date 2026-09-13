@@ -70,6 +70,27 @@ class ServerTask(BaseModel):
     artifacts: list[ServerTaskArtifact] = []
 
 
+class DeviceToolCall(BaseModel):
+    """Durable request/result boundary for work that must execute on the phone."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_id: UUID = Field(alias="taskId")
+    tool_call_id: str = Field(alias="toolCallId", min_length=1)
+    tool_name: str = Field(alias="toolName", min_length=1)
+    arguments: dict[str, object]
+    status: Literal["pending", "completed", "failed"]
+    result: dict[str, object] | None = None
+    error_code: str | None = Field(default=None, alias="errorCode")
+    error_message: str | None = Field(default=None, alias="errorMessage")
+    requested_at: datetime = Field(alias="requestedAt")
+    completed_at: datetime | None = Field(default=None, alias="completedAt")
+
+
+class DeviceToolConflictError(ValueError):
+    """Raised when a device Tool id is reused with different semantics."""
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactDraft:
     kind: str

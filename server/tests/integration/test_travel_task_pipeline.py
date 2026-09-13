@@ -1,5 +1,6 @@
 """Queue-to-Agent-to-artifact deterministic travel pipeline test."""
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from app.tasks.models import ServerTaskCreate
 from app.tasks.runner import ServerTaskRunner
 from app.tasks.stores.memory import InMemoryServerTaskStore
 from app.tools.travel.models import AppleMapsPlace
+from app.tools.travel.device_maps import DeviceMapKitSearchClient
 from app.tools.travel.profile import make_travel_profile
 from app.tools.travel.tools import ItinerarySubmitTool, PlacesSearchTool
 
@@ -21,7 +23,7 @@ class RecordingMaps:
         self.queries: list[tuple[str, str]] = []
 
     async def search(
-        self, query: str, destination: str, language: str = "zh-CN"
+        self, query: str, destination: str, language: str = "zh-CN", **_context
     ) -> AppleMapsPlace:
         self.queries.append((query, destination))
         return AppleMapsPlace(
@@ -138,3 +140,76 @@ async def test_travel_task_starts_immediately_and_completes_full_pipeline_once(
     assert maps.queries == [("上海博物馆", "上海")]
     assert [event.event_type for event in events].count("model.turn") == 2
     assert [event.event_type for event in events].count("tool.result") == 2
+
+
+async def test_travel_pipeline_pauses_for_native_mapkit_and_resumes_from_phone(
+    anyio_backend,
+) -> None:
+    store = InMemoryServerTaskStore()
+    journal = InMemoryAgentLoopJournal()
+    model = TravelModel()
+    loop_handler = AgentLoopTaskHandler(
+        AgentLoopEngine(
+            model,
+            AgentLoopToolRegistry([
+                PlacesSearchTool(DeviceMapKitSearchClient(
+                    store,
+                    timeout_seconds=2,
+                    poll_seconds=0.01,
+                )),
+                ItinerarySubmitTool(),
+            ]),
+            journal,
+        ),
+        [make_travel_profile()],
+    )
+    runner = ServerTaskRunner(
+        store, [loop_handler], worker_id="device-bridge-worker", max_attempts=3
+    )
+    created = await store.create(
+        uuid4(),
+        ServerTaskCreate(
+            capability="travel.plan",
+            title="规划上海旅行",
+            input={
+                "destination": "上海",
+                "startDate": "2026-10-01",
+                "endDate": "2026-10-01",
+                "pace": "relaxed",
+            },
+            toolCallId="call-device-travel",
+        ),
+    )
+
+    running = asyncio.create_task(runner.run_once())
+    pending = None
+    for _ in range(100):
+        pending = await store.get_pending_device_tool(created.id)
+        if pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert pending is not None
+    await store.submit_device_tool_result(
+        created.id,
+        pending.tool_call_id,
+        result={
+            "name": "上海博物馆",
+            "formatted_address": "上海市黄浦区人民大道201号",
+            "latitude": 31.2304,
+            "longitude": 121.4737,
+            "map_url": "https://maps.apple.com/place?place-id=test",
+            "place_id": "test",
+            "verified": True,
+            "confidence": 0.97,
+            "source": "mapkit-native",
+        },
+        error_code=None,
+        error_message=None,
+    )
+
+    assert await running is True
+    completed = await store.get(created.id)
+    assert completed is not None
+    assert completed.status == "completed"
+    itinerary = completed.artifacts[0].payload
+    assert itinerary["days"][0]["items"][0]["place"]["source"] == "mapkit-native"

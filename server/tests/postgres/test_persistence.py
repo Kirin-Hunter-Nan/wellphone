@@ -76,6 +76,44 @@ async def test_server_task_and_loop_journal_survive_store_reopen(
     await reopened_store.close()
 
 
+async def test_device_tool_round_trip_uses_real_postgres_rows(
+    anyio_backend, postgres_url: str,
+) -> None:
+    store = PostgreSQLServerTaskStore(postgres_url)
+    await store.initialize()
+    created = await store.create(uuid4(), ServerTaskCreate(
+        capability="test.device-tool",
+        title="Device Tool task",
+        input={},
+        toolCallId=f"task-{uuid4()}",
+    ))
+    tool_call_id = f"map-{uuid4()}"
+
+    enqueued = await store.enqueue_device_tool(
+        created.id,
+        tool_call_id,
+        "mapkit.local-search",
+        {"query": "上海博物馆", "destination": "上海"},
+    )
+    pending = await store.get_pending_device_tool(created.id)
+    completed = await store.submit_device_tool_result(
+        created.id,
+        tool_call_id,
+        result={"name": "上海博物馆", "verified": True},
+        error_code=None,
+        error_message=None,
+    )
+    restored = await store.get_device_tool(created.id, tool_call_id)
+
+    assert enqueued.status == "pending"
+    assert pending is not None and pending.tool_call_id == tool_call_id
+    assert completed is not None and completed.status == "completed"
+    assert restored is not None
+    assert restored.result == {"name": "上海博物馆", "verified": True}
+    assert await store.get_pending_device_tool(created.id) is None
+    await store.close()
+
+
 async def test_checkpoint_idempotency_and_monotonic_snapshot_use_real_constraints(
     anyio_backend, postgres_url: str,
 ) -> None:

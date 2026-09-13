@@ -23,6 +23,8 @@ flowchart LR
     C --> N["Generic Agent Loop"]
     N --> O["Task Profile"]
     N --> P["Atomic Tool Registry"]
+    P --> Q["Durable Device Tool Queue"]
+    Q <--> B
     C -->|"WellPhone SSE"| B
     B --> F["Runtime Harness"]
     F --> G["Capability Registry"]
@@ -69,7 +71,7 @@ cp .env.example .env
 DASHSCOPE_API_KEY=
 QWEN_BASE_URL=
 QWEN_MODEL=
-# 可选：启用 Apple Maps Server API 的真实地点与坐标核对
+# 可选备用；默认由 iPhone 原生 MapKit 无 token 核对地点
 APPLE_MAPS_TOKEN=
 ```
 
@@ -99,7 +101,7 @@ API Key 只存在于 `server/.env`，不会进入客户端或 Git。
 
 测试提醒链路时，可以发送“请提醒我明天上午九点带伞”。明确的创建指令会直接进入执行，聊天中显示进度，完成后收起为精简卡片并生成基于真实结果的自然语言回复。首次使用时仍由 iOS 显示系统权限请求。修改服务端代码后，本地开发模式需要重新启动 `uv run python -m app`；Docker 模式需要重新运行 `docker compose up -d --build`。
 
-测试旅行链路时，可以发送“帮我规划 2026 年 10 月 1 日到 3 日的上海旅行，节奏轻松，喜欢博物馆和咖啡”。任务会立即开始，即使离开聊天页面，worker 也会继续运行统一 Agent Loop；模型根据目标自主选择地点检索 Tool，提交 Tool 负责确定性校验，校验失败会以 Observation 返回循环修订。若用户明确要求“并添加到日历”，完成后会直接写入 Apple 日历；未明确要求时，完成后才显示日历选择弹窗。任务详情会展示阶段进度，以及结构化行程、文本版和日历事件产物。未填写 `APPLE_MAPS_TOKEN` 时会生成 Apple 地图检索链接；填写后会通过 Apple Maps Server API 核对地点与坐标。
+测试旅行链路时，可以发送“帮我规划 2026 年 10 月 1 日到 3 日的上海旅行，节奏轻松，喜欢博物馆和咖啡”。任务会立即开始，即使离开聊天页面，worker 也会继续运行统一 Agent Loop；地点检索由服务端持久化为 Device Tool，iPhone 在持续后台任务中通过无界面的原生 MapKit 搜索并回传名称、地址、坐标与 Place ID，全程不打开地图或抢焦点。未核对或存在歧义的地点不能通过行程提交校验；`APPLE_MAPS_TOKEN` 仅作为设备长时间无响应时的可选服务端备用。若用户明确要求“并添加到日历”，完成后会直接、幂等地写入 Apple 日历，并在逐项回读验证成功后才将整个任务标记为完成；未明确要求时，完成后才显示日历选择弹窗。
 
 允许通知权限后，WellPhone 会在任务完成并通过验证时发送本地通知；点击通知会进入任务中心。拒绝通知权限不会阻止任务执行，任务状态仍会保存在 App 内。
 

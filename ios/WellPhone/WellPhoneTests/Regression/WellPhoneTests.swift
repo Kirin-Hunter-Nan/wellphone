@@ -662,11 +662,13 @@ struct WellPhoneTests {
         let container = try makeContainer()
         let calendarImporter = RecordingTravelCalendarImporter()
         let serverClient = ImmediatelyCompletingTravelServerClient()
+        let notifier = RecordingTaskNotifier()
+        let resultReporter = RecordingToolResultReporter()
         let controller = TaskController(
             modelContext: container.mainContext,
             runtime: .testing(reminderExecutor: FakeReminderExecutor()),
-            notifier: DisabledTaskNotifier(),
-            resultReporter: DisabledToolResultReporter(),
+            notifier: notifier,
+            resultReporter: resultReporter,
             checkpointReporter: DisabledTaskCheckpointReporter(),
             serverTaskClient: serverClient,
             calendarImporter: calendarImporter
@@ -690,12 +692,117 @@ struct WellPhoneTests {
 
         #expect(task.status == .completed)
         #expect(calendarImporter.importCount == 1)
+        #expect(calendarImporter.idempotencyKeys == [task.id.uuidString.lowercased()])
         #expect(controller.calendarImportPrompt == nil)
         #expect(task.resultSummary?.contains("已添加到 Apple 日历") == true)
+        #expect(notifier.notifications.map(\.kind) == [.completed])
         let calendarArtifact = controller.artifacts(for: task).first {
             $0.contentType == "application/vnd.wellphone.calendar-events+json"
         }
         #expect(calendarArtifact?.storageReference == "eventkit:event-1")
+        let repeatedImportSucceeded = await controller.importTravelCalendar(taskID: task.id)
+        #expect(repeatedImportSucceeded)
+        #expect(calendarImporter.importCount == 1)
+        let reports = await resultReporter.reports
+        #expect(reports.count == 1)
+        #expect(reports.first?.result.status == .verified)
+
+        #expect(await controller.importTravelCalendar(taskID: task.id))
+        #expect(calendarImporter.importCount == 1)
+    }
+
+    @Test @MainActor
+    func requiredTravelCalendarFailureFailsWholeTaskWithoutCompletionNotification() async throws {
+        let container = try makeContainer()
+        let calendarImporter = RecordingTravelCalendarImporter(
+            error: TravelCalendarImportError.verificationFailed
+        )
+        let notifier = RecordingTaskNotifier()
+        let resultReporter = RecordingToolResultReporter()
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: FakeReminderExecutor()),
+            notifier: notifier,
+            resultReporter: resultReporter,
+            checkpointReporter: DisabledTaskCheckpointReporter(),
+            serverTaskClient: ImmediatelyCompletingTravelServerClient(),
+            calendarImporter: calendarImporter
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_travel_calendar_failure",
+                capability: "travel.plan",
+                arguments: #"{"destination":"上海","startDate":"2026-10-01","endDate":"2026-10-01","addToCalendar":true}"#,
+                executionLocation: .server
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        await controller.startTask(taskID: task.id)
+        for _ in 0..<1_000 {
+            if task.status == .failed, task.resultReportState == .delivered { break }
+            await Task.yield()
+        }
+
+        #expect(task.status == .failed)
+        #expect(task.phase == .failed)
+        #expect(task.errorMessage?.contains("无法回读验证") == true)
+        #expect(notifier.notifications.isEmpty)
+        let reports = await resultReporter.reports
+        #expect(reports.count == 1)
+        #expect(reports.first?.result.status == .failed)
+    }
+
+    @Test @MainActor
+    func serverMapKitRequestExecutesOnDeviceAndReturnsWithoutOpeningUI() async throws {
+        let container = try makeContainer()
+        let serverClient = DeviceToolServerClient()
+        let executor = RecordingDeviceToolExecutor()
+        let controller = TaskController(
+            modelContext: container.mainContext,
+            runtime: .testing(reminderExecutor: FakeReminderExecutor()),
+            notifier: DisabledTaskNotifier(),
+            serverTaskClient: serverClient,
+            deviceToolExecutor: executor
+        )
+        let task = try await controller.prepareTool(
+            from: AgentToolRequest(
+                id: "call_travel_mapkit",
+                capability: "travel.plan",
+                arguments: #"{"destination":"上海","startDate":"2026-10-01","endDate":"2026-10-01"}"#,
+                executionLocation: .server
+            ),
+            conversationID: UUID(),
+            sourceMessageID: UUID()
+        )
+
+        let handled = try await controller.processPendingDeviceTool(taskID: task.id)
+
+        #expect(handled)
+        #expect(executor.requests.map(\.toolName) == ["mapkit.local-search"])
+        let submissions = await serverClient.recordedSubmissions()
+        #expect(submissions.count == 1)
+        #expect(submissions.first?.toolCallID == "search_1")
+        #expect(submissions.first?.result.result?["verified"] == .bool(true))
+    }
+
+    @Test @MainActor
+    func mapKitCanonicalSimilarityDistinguishesSpecificBranchesFromGenericNames() {
+        let executor = MapKitDeviceToolExecutor()
+
+        #expect(executor.canonicalNameSimilarity(
+            query: "上海博物馆 人民广场",
+            candidate: "上海博物馆(人民广场馆)"
+        ) >= 0.97)
+        #expect(executor.canonicalNameSimilarity(
+            query: "上海博物馆",
+            candidate: "上海博物馆(东馆)"
+        ) < 0.97)
+        #expect(executor.canonicalNameSimilarity(
+            query: "% Arabica 上海店",
+            candidate: "%Arabica"
+        ) < 0.97)
     }
 
     @Test @MainActor
@@ -1284,10 +1391,18 @@ private actor ReplyingToolResultReporter: ToolResultReporting {
 @MainActor
 private final class RecordingTravelCalendarImporter: TravelCalendarImporting {
     private(set) var importCount = 0
+    private(set) var idempotencyKeys: [String] = []
+    private let error: (any Error)?
 
-    func importEvents(payload: Data) async throws -> [String] {
+    init(error: (any Error)? = nil) {
+        self.error = error
+    }
+
+    func importEvents(payload: Data, idempotencyKey: String) async throws -> [String] {
         _ = payload
         importCount += 1
+        idempotencyKeys.append(idempotencyKey)
+        if let error { throw error }
         return ["event-1"]
     }
 }
@@ -1390,6 +1505,117 @@ private actor ImmediatelyCompletingTravelServerClient: ServerTaskServing {
             updatedAt: Date(),
             steps: [],
             artifacts: artifacts
+        )
+    }
+}
+
+@MainActor
+private final class RecordingDeviceToolExecutor: DeviceToolExecuting {
+    private(set) var requests: [DeviceToolRequest] = []
+
+    func execute(_ request: DeviceToolRequest) async -> DeviceToolExecutionResult {
+        requests.append(request)
+        return .completed([
+            "name": .string("上海博物馆（人民广场馆）"),
+            "formatted_address": .string("上海市黄浦区人民大道201号"),
+            "latitude": .number(31.2304),
+            "longitude": .number(121.4737),
+            "map_url": .string("https://maps.apple.com/place?place-id=test"),
+            "place_id": .string("test"),
+            "verified": .bool(true),
+            "source": .string("mapkit-native"),
+        ])
+    }
+}
+
+private actor DeviceToolServerClient: ServerTaskServing {
+    struct Submission: Sendable {
+        let toolCallID: String
+        let result: DeviceToolExecutionResult
+    }
+
+    private let taskID = UUID()
+    private var conversationID = UUID()
+    private var submissions: [Submission] = []
+
+    func create(
+        conversationID: UUID,
+        toolCallID: String,
+        capability: String,
+        title: String,
+        input: [String: JSONValue]
+    ) async throws -> ServerTaskSnapshot {
+        _ = toolCallID
+        _ = input
+        self.conversationID = conversationID
+        return snapshot(capability: capability, title: title)
+    }
+
+    func confirm(taskID: UUID) async throws -> ServerTaskSnapshot {
+        _ = taskID
+        return snapshot(capability: "travel.plan", title: "规划上海旅行")
+    }
+
+    func cancel(taskID: UUID) async throws -> ServerTaskSnapshot {
+        _ = taskID
+        return snapshot(
+            capability: "travel.plan",
+            title: "规划上海旅行",
+            status: "cancelled",
+            phase: "cancelled"
+        )
+    }
+
+    func get(taskID: UUID) async throws -> ServerTaskSnapshot {
+        _ = taskID
+        return snapshot(capability: "travel.plan", title: "规划上海旅行")
+    }
+
+    func pendingDeviceTool(taskID: UUID) async throws -> DeviceToolRequest? {
+        DeviceToolRequest(
+            taskId: taskID,
+            toolCallId: "search_1",
+            toolName: "mapkit.local-search",
+            arguments: [
+                "query": .string("上海博物馆"),
+                "destination": .string("上海"),
+                "language": .string("zh-CN"),
+            ]
+        )
+    }
+
+    func submitDeviceToolResult(
+        taskID: UUID,
+        toolCallID: String,
+        result: DeviceToolExecutionResult
+    ) async throws {
+        _ = taskID
+        submissions.append(Submission(toolCallID: toolCallID, result: result))
+    }
+
+    func recordedSubmissions() -> [Submission] { submissions }
+
+    private func snapshot(
+        capability: String,
+        title: String,
+        status: String = "running",
+        phase: String = "usingTools"
+    ) -> ServerTaskSnapshot {
+        ServerTaskSnapshot(
+            id: taskID,
+            conversationId: conversationID,
+            capability: capability,
+            title: title,
+            status: status,
+            phase: phase,
+            progress: 0.5,
+            detail: "正在核对地点",
+            resultSummary: nil,
+            errorMessage: nil,
+            attemptCount: 1,
+            updatedAt: Date(),
+            steps: [],
+            artifacts: []
         )
     }
 }

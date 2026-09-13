@@ -89,6 +89,9 @@ extension TaskController {
                     let wasCompleted = localTask.status == .completed
                     self.apply(snapshot, to: localTask)
                     try self.modelContext.save()
+                    if localTask.status.isActive {
+                        _ = try await self.processPendingDeviceTool(taskID: taskID)
+                    }
                     if !localTask.status.isActive {
                         if localTask.status == .completed, !wasCompleted {
                             let calendarArtifactIsAvailable = self.artifacts(for: localTask)
@@ -97,22 +100,26 @@ extension TaskController {
                                         == "application/vnd.wellphone.calendar-events+json"
                                         && $0.storageReference?.hasPrefix("eventkit:") != true
                                 }
-                            if calendarArtifactIsAvailable {
-                                if self.calendarWasExplicitlyRequested(for: localTask) {
-                                    await self.importTravelCalendar(
-                                        taskID: localTask.id,
-                                        includeOutcomeInSummary: true
-                                    )
-                                } else {
-                                    self.offerCalendarImport(for: localTask)
-                                }
+                            if self.calendarWasExplicitlyRequested(for: localTask) {
+                                // Calendar persistence is part of the requested outcome,
+                                // not optional post-processing. The importer moves the
+                                // task through verifying and only restores completed after
+                                // EventKit read-back succeeds.
+                                await self.importTravelCalendar(
+                                    taskID: localTask.id,
+                                    includeOutcomeInSummary: true
+                                )
+                            } else if calendarArtifactIsAvailable {
+                                self.offerCalendarImport(for: localTask)
                             }
-                            await self.notifier.post(AgentTaskNotification(
-                                taskID: localTask.id,
-                                kind: .completed,
-                                title: "任务已完成",
-                                body: localTask.resultSummary ?? localTask.title
-                            ))
+                            if localTask.status == .completed {
+                                await self.notifier.post(AgentTaskNotification(
+                                    taskID: localTask.id,
+                                    kind: .completed,
+                                    title: "任务已完成",
+                                    body: localTask.resultSummary ?? localTask.title
+                                ))
+                            }
                         }
                         await self.queueAndReportResult(for: localTask)
                         self.backgroundCoordinator.finish(
@@ -130,6 +137,39 @@ extension TaskController {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    @discardableResult
+    func processPendingDeviceTool(taskID: UUID) async throws -> Bool {
+        guard let serverTaskClient,
+              let request = try await serverTaskClient.pendingDeviceTool(taskID: taskID)
+        else { return false }
+        guard request.taskId == taskID else {
+            throw DeviceToolDispatchError.taskMismatch
+        }
+        let cacheKey = "\(taskID.uuidString.lowercased()):\(request.toolCallId)"
+        let result: DeviceToolExecutionResult
+        if let cached = pendingDeviceToolResults[cacheKey] {
+            result = cached
+        } else {
+            if let task = task(id: taskID) {
+                task.detail = "正在通过系统地图核对地点"
+                touchAndSave(task)
+            }
+            result = await deviceToolExecutor.execute(request)
+            pendingDeviceToolResults[cacheKey] = result
+        }
+        try await serverTaskClient.submitDeviceToolResult(
+            taskID: taskID,
+            toolCallID: request.toolCallId,
+            result: result
+        )
+        pendingDeviceToolResults.removeValue(forKey: cacheKey)
+        if let task = task(id: taskID), task.status.isActive {
+            task.detail = "系统地图核对完成，正在继续规划"
+            touchAndSave(task)
+        }
+        return true
     }
 
     func apply(_ snapshot: ServerTaskSnapshot, to task: AgentTask) {
@@ -180,4 +220,10 @@ enum ServerTaskIntegrationError: LocalizedError {
     case unavailable
 
     var errorDescription: String? { "后台任务服务尚未配置。" }
+}
+
+private enum DeviceToolDispatchError: LocalizedError {
+    case taskMismatch
+
+    var errorDescription: String? { "服务端返回了不属于当前任务的设备工具请求。" }
 }

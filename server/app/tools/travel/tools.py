@@ -16,7 +16,8 @@ class PlacesSearchTool:
     name = "places_search"
     description = (
         "Search Apple Maps for one concrete attraction, restaurant, cafe, hotel, or other "
-        "place. Call it for every place before submitting an itinerary."
+        "place. Call it for every place before submitting an itinerary, then copy the "
+        "returned place.name exactly into the itinerary item name."
     )
     arguments_model = PlacesSearchArguments
 
@@ -42,9 +43,25 @@ class PlacesSearchTool:
                 },
             })
         place = await self._maps.search(
-            values.query, requested.destination, values.language
+            values.query,
+            requested.destination,
+            values.language,
+            task_id=context.task.id,
+            tool_call_id=context.tool_call_id,
         )
         dumped = place.model_dump(mode="json")
+        if not place.verified:
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "place_not_verified",
+                    "message": (
+                        place.verification_error
+                        or f"MapKit 无法唯一确认地点：{values.query}"
+                    ),
+                },
+                "place": dumped,
+            })
         return LoopToolResult(
             observation={"ok": True, "place": dumped},
             state_updates={"places": {values.query.casefold(): dumped}},

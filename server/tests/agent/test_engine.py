@@ -280,7 +280,7 @@ async def test_success_between_equal_failures_resets_repeated_failure_counter(
     model = ScriptedModel([
         tool_turn(("call-1", "failure")),
         tool_turn(("call-2", "success")),
-        tool_turn(("call-3", "failure-again")),
+        tool_turn(("call-3", "failure")),
         tool_turn(("call-4", "finish")),
     ])
     tool = RecordingTool([
@@ -299,6 +299,52 @@ async def test_success_between_equal_failures_resets_repeated_failure_counter(
     assert outcome.summary == "finished"
     assert model.call_count == 4
     assert len(tool.calls) == 4
+
+
+async def test_equal_errors_for_different_arguments_are_not_identical_failures(
+    anyio_backend,
+) -> None:
+    failure = LoopToolResult({
+        "ok": False,
+        "error": {"code": "place_not_verified", "message": "ambiguous place"},
+    })
+    model = ScriptedModel([
+        tool_turn(
+            ("call-1", "上海博物馆"),
+            ("call-2", "Manner Coffee 上海店"),
+            ("call-3", "% Arabica 上海店"),
+        ),
+        tool_turn(("call-4", "finish")),
+    ])
+    tool = RecordingTool([
+        failure,
+        failure,
+        failure,
+        LoopToolResult({"ok": True}, final_output={"summary": "finished"}),
+    ])
+    journal = InMemoryAgentLoopJournal()
+    current_task = task()
+
+    outcome = await AgentLoopEngine(
+        model, AgentLoopToolRegistry([tool]), journal
+    ).run(
+        current_task,
+        profile(max_iterations=2, max_identical_failures=2),
+        no_op_report,
+    )
+
+    assert outcome.summary == "finished"
+    assert tool.calls == [
+        "上海博物馆",
+        "Manner Coffee 上海店",
+        "% Arabica 上海店",
+        "finish",
+    ]
+    tool_events = [
+        event for event in await journal.load(current_task.id)
+        if event.event_type == "tool.result"
+    ]
+    assert tool_events[0].payload["arguments"] == {"value": "上海博物馆"}
 
 
 async def test_identical_failures_stop_at_configured_threshold(

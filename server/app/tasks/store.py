@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
-from app.tasks.models import ServerTask, ServerTaskCreate, TaskOutcome
+from app.tasks.models import DeviceToolCall, ServerTask, ServerTaskCreate, TaskOutcome
 
 class ServerTaskStore(Protocol):
     async def initialize(self) -> None: ...
@@ -27,4 +27,18 @@ class ServerTaskStore(Protocol):
         self, task_id: UUID, worker_id: str, message: str, *, retry: bool,
         retry_delay_seconds: int,
     ) -> None: ...
+    async def enqueue_device_tool(
+        self, task_id: UUID, tool_call_id: str, tool_name: str,
+        arguments: dict[str, object],
+    ) -> DeviceToolCall: ...
+    async def get_pending_device_tool(self, task_id: UUID) -> DeviceToolCall | None: ...
+    async def get_device_tool(
+        self, task_id: UUID, tool_call_id: str,
+    ) -> DeviceToolCall | None: ...
+    async def submit_device_tool_result(
+        self, task_id: UUID, tool_call_id: str, *,
+        result: dict[str, object] | None,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> DeviceToolCall | None: ...
     async def close(self) -> None: ...
