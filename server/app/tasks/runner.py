@@ -54,11 +54,26 @@ class ServerTaskRunner:
             )
 
         try:
+            execution = asyncio.create_task(handler.run(task, report))
             heartbeat = asyncio.create_task(self._heartbeat(task.id))
             try:
-                outcome = await handler.run(task, report)
+                done, _ = await asyncio.wait(
+                    (execution, heartbeat),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if heartbeat in done and not execution.done():
+                    heartbeat.result()
+                    execution.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await execution
+                    return True
+                outcome = await execution
                 await self._store.complete(task.id, self._worker_id, outcome)
             finally:
+                if not execution.done():
+                    execution.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await execution
                 heartbeat.cancel()
                 with suppress(asyncio.CancelledError):
                     await heartbeat
@@ -76,7 +91,7 @@ class ServerTaskRunner:
         return True
 
     async def _heartbeat(self, task_id: UUID) -> None:
-        interval = max(self._lease_seconds / 3, 1)
+        interval = min(max(self._lease_seconds / 3, 0.05), 2)
         while True:
             await asyncio.sleep(interval)
             if not await self._store.renew(

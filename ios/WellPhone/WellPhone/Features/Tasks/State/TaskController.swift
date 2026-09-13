@@ -94,7 +94,7 @@ final class TaskController {
             serverTaskClient: URLSessionServerTaskClient(
                 baseURL: AppConfiguration.modelProxyBaseURL
             ),
-            deviceToolExecutor: MapKitDeviceToolExecutor(),
+            deviceToolExecutor: WellPhoneDeviceToolExecutor(),
             calendarImporter: EventKitTravelCalendarImporter(),
             backgroundCoordinator: ContinuedProcessingBackgroundCoordinator()
         )

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A4E10001305248270098EC94 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A4E10003305248270098EC94 /* GoogleSignIn */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		F2BA93AF305248290098EC94 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -65,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A4E10001305248270098EC94 /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -125,6 +130,7 @@
 			);
 			name = WellPhone;
 			packageProductDependencies = (
+				A4E10003305248270098EC94 /* GoogleSignIn */,
 			);
 			productName = WellPhone;
 			productReference = F2BA939F305248270098EC94 /* WellPhone.app */;
@@ -208,6 +214,9 @@
 			);
 			mainGroup = F2BA9396305248270098EC94;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A4E10002305248270098EC94 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F2BA93A0305248270098EC94 /* Products */;
 			projectDirPath = "";
@@ -415,6 +424,8 @@
 				DEVELOPMENT_TEAM = SHXBXYSFFV;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				GID_CLIENT_ID = "893296074676-l0ktv9eojruevbtur4gnaikim9v7490r.apps.googleusercontent.com";
+				GOOGLE_REVERSED_CLIENT_ID = "com.googleusercontent.apps.893296074676-l0ktv9eojruevbtur4gnaikim9v7490r";
 				INFOPLIST_FILE = WellPhone/Info.plist;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接您在本地网络运行的 WellPhone 模型代理。";
@@ -450,6 +461,8 @@
 				DEVELOPMENT_TEAM = SHXBXYSFFV;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				GID_CLIENT_ID = "893296074676-l0ktv9eojruevbtur4gnaikim9v7490r.apps.googleusercontent.com";
+				GOOGLE_REVERSED_CLIENT_ID = "com.googleusercontent.apps.893296074676-l0ktv9eojruevbtur4gnaikim9v7490r";
 				INFOPLIST_FILE = WellPhone/Info.plist;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接您在本地网络运行的 WellPhone 模型代理。";
@@ -599,6 +612,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A4E10002305248270098EC94 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A4E10003305248270098EC94 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A4E10002305248270098EC94 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = F2BA9397305248270098EC94 /* Project object */;
 }

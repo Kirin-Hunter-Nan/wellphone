@@ -2,7 +2,7 @@
 
 一个面向 iPhone 的无界面多模态 Agent。用户通过文字、语音、图片或文件下达任务后，可以继续使用当前 App；Agent 在 iOS 允许的后台执行窗口内完成推理、文件处理、系统能力调用和服务 API 操作，全程不抢占屏幕、键盘或输入焦点。
 
-> 当前阶段：设备端与服务端 Harness 已贯通。`reminder.create` 在用户明确下达指令后直接执行并验证；服务端长任务由 LangGraph 统一 Agent Loop 驱动，`travel.plan` 只提供任务 Profile 与原子 Tool 白名单。聊天已支持相册图片选择、发送前预览、本地附件持久化，以及 Qwen 兼容的多模态 Content Parts。聊天请求、权威对话历史、Tool Result、任务检查点、服务端任务租约、Loop 事件与产物均由 PostgreSQL 协调。
+> 当前阶段：设备端与服务端 Harness 已贯通。`reminder.create` 在用户明确下达指令后直接执行并验证；服务端长任务由 LangGraph 统一 Agent Loop 驱动。`business-trip.plan` 已支持从文字、订单图片或用户明确授权的 Gmail 查询中提取固定安排，核对地点、检测冲突、补充交通与空档，并生成出差计划、冲突/待办报告和带可选提醒的 Apple 日历事件；用户明确要求时，还会把校验后的计划在手机端生成 PDF、上传到 Google Drive 并回读验证。Google OAuth token 由官方 iOS SDK 保存在设备钥匙串，不进入服务端任务状态。
 
 ## 核心原则
 
@@ -46,6 +46,7 @@ flowchart LR
 4. **V0.3 多模态**：图片选择、预览和 Qwen 图文输入已完成；Vocal Shortcuts 语音唤醒与设备端转写 MVP 已完成，PDF 与 OCR 待扩展。
 5. **V0.4 服务端长任务**：PostgreSQL 队列、任务租约、worker、重试、进度与产物已完成。
 6. **V0.5 旅行规划**：通用 Agent Loop 自主调用地点检索与行程提交 Tool，Apple 地图地点核对/打开链接、文本与日历事件产物已完成。
+7. **V0.6 商务出差任务包**：固定订单/会议提取、原时间保护、地点核对、冲突识别、待办与日历提醒产物，以及 Gmail 只读取证和 Drive 幂等上传已完成；真实账号发布验收需配置 Google Cloud OAuth 客户端。
 
 ## 技术栈
 
@@ -102,6 +103,25 @@ API Key 只存在于 `server/.env`，不会进入客户端或 Git。
 测试提醒链路时，可以发送“请提醒我明天上午九点带伞”。明确的创建指令会直接进入执行，聊天中显示进度，完成后收起为精简卡片并生成基于真实结果的自然语言回复。首次使用时仍由 iOS 显示系统权限请求。修改服务端代码后，本地开发模式需要重新启动 `uv run python -m app`；Docker 模式需要重新运行 `docker compose up -d --build`。
 
 测试旅行链路时，可以发送“帮我规划 2026 年 10 月 1 日到 3 日的上海旅行，节奏轻松，喜欢博物馆和咖啡”。任务会立即开始，即使离开聊天页面，worker 也会继续运行统一 Agent Loop；地点检索由服务端持久化为 Device Tool，iPhone 在持续后台任务中通过无界面的原生 MapKit 搜索并回传名称、地址、坐标与 Place ID，全程不打开地图或抢焦点。未核对或存在歧义的地点不能通过行程提交校验；`APPLE_MAPS_TOKEN` 仅作为设备长时间无响应时的可选服务端备用。若用户明确要求“并添加到日历”，完成后会直接、幂等地写入 Apple 日历，并在逐项回读验证成功后才将整个任务标记为完成；未明确要求时，完成后才显示日历选择弹窗。
+
+测试商务出差链路时，可以使用 [上海出差演示资料](fixtures/business-trip/shanghai-demo.txt)。聊天模型会把其中的航班、酒店和会议转换为不可擅自改动的固定安排；后台 Agent 可以补充交通和空档，但提交前必须保留全部固定事项及其原始时间，并通过 Apple 地图核对具体地点。任务会确定性标记固定事项之间的时间冲突。只有用户明确要求写入日历时才会执行 EventKit 写入；明确要求提醒时，日历事件会携带按类型生成的提前提醒并在写入后回读验证。
+
+### 配置 Gmail 与 Google Drive
+
+WellPhone 使用 Google 官方 iOS Sign-In SDK。先在 Google Cloud 中为 `com.michaelnan.WellPhone` 创建 iOS OAuth 客户端，并启用 Gmail API 与 Google Drive API；开发期把测试账号加入 OAuth 同意屏幕的测试用户。然后在 WellPhone target 的 Debug/Release Build Settings 中填写：
+
+```text
+GID_CLIENT_ID = 你的 iOS OAuth Client ID
+GOOGLE_REVERSED_CLIENT_ID = Google Cloud 提供的 iOS URL scheme
+```
+
+Client ID 不是客户端密钥，但不要提交任何访问令牌、刷新令牌或测试邮箱内容。首次执行明确包含“从 Gmail 查找”的出差任务时，App 会显示 Google 同意页面并只请求 `gmail.readonly`；只有用户明确要求“上传到 Google Drive”时才使用 `drive.file`。聊天模型只记录 `searchGmail=true`，服务端再按目的地和出差日期生成不可扩大的 `gmailQuery`；默认邮件接收时间范围为出发前 180 天至返程后一周，不添加 `from:me` 或 `to:me`。每个抽取出的订单或会议还必须引用真实的 Gmail message ID。Drive 文件用任务 ID 幂等查找，手机将计划分页渲染为 PDF，上传后下载内容进行逐字节验证；聊天完成回复会附带已验证的 Drive 链接。
+
+面向用户的测试输入应保持自然语言，不要求用户了解 Gmail 搜索操作符。例如：
+
+> 请帮我整理 2026 年 10 月 1 日到 3 日的上海出差。从我的 Gmail 中找出与这次出差有关的机票、酒店和会议邮件，保留其中的真实时间和地点，检查冲突并补充必要交通，最后把计划上传到 Google Drive。
+
+服务端会根据目的地和日期范围生成 `gmailQuery`；该查询一旦写入任务输入就不能被后台 Agent 扩大。没有真实订单邮件的测试账号，可以把 [Gmail 商务出差测试邮件](fixtures/business-trip/gmail-test-messages.md) 中的四封模拟邮件分别发送给自己；邮件内容仍是模拟资料，但会获得真实 Gmail message ID，适合端到端验收。
 
 允许通知权限后，WellPhone 会在任务完成并通过验证时发送本地通知；点击通知会进入任务中心。拒绝通知权限不会阻止任务执行，任务状态仍会保存在 App 内。
 

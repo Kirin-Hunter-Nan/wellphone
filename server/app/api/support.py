@@ -36,11 +36,18 @@ def assistant_content(events: list[str]) -> str | None:
 
 
 def deterministic_tool_followup(submission: ToolResultSubmission) -> str | None:
-    if submission.capability != "travel.plan":
+    supported = {
+        "travel.plan": ("旅行规划", "行程"),
+        "business-trip.plan": ("商务出差任务", "出差计划"),
+    }
+    labels = supported.get(submission.capability)
+    if labels is None:
         return None
+    task_label, artifact_label = labels
     if submission.status == "verified":
-        summary = "旅行规划已经完成。"
+        summary = f"{task_label}已经完成。"
         itinerary_text: str | None = None
+        uploaded_file: str | None = None
         if submission.result:
             supplied = submission.result.get("summary")
             if isinstance(supplied, str) and supplied.strip():
@@ -57,11 +64,34 @@ def deterministic_tool_followup(submission: ToolResultSubmission) -> str | None:
                         and payload.strip()
                     ):
                         itinerary_text = payload.strip()
-                        break
+                        reference = artifact.get("storageReference")
+                        if isinstance(reference, str) and reference.startswith("https://"):
+                            uploaded_file = reference
         if itinerary_text:
-            return f"{summary}\n\n{itinerary_text}"
-        return f"{summary}\n\n当前结果没有可展示的文本行程，请在任务详情中查看。"
+            title, body = _split_markdown_title(itinerary_text, task_label)
+            sections = [title, summary]
+            if body:
+                sections.append(body)
+            if uploaded_file:
+                sections.append(
+                    "## 文件\n\n"
+                    f"[在 Google Drive 中打开已上传的 PDF]({uploaded_file})"
+                )
+            return "\n\n".join(sections)
+        return (
+            f"{summary}\n\n当前结果没有可展示的文本{artifact_label}，"
+            "请在任务详情中查看。"
+        )
     if submission.status == "declined":
-        return "旅行规划任务已取消，没有生成或写入任何行程。"
-    message = submission.error.message if submission.error else "旅行规划暂时未能完成。"
-    return f"旅行规划失败：{message}"
+        return f"{task_label}已取消，没有生成或写入任何{artifact_label}。"
+    message = submission.error.message if submission.error else f"{task_label}暂时未能完成。"
+    return f"{task_label}失败：{message}"
+
+
+def _split_markdown_title(markdown: str, fallback_title: str) -> tuple[str, str]:
+    lines = markdown.splitlines()
+    if lines and lines[0].startswith("# "):
+        title = lines[0]
+        body = "\n".join(lines[1:]).strip()
+        return title, body
+    return f"# {fallback_title}", markdown.strip()

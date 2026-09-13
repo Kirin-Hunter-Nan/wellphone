@@ -92,4 +92,6 @@ def test_intent_definitions_include_clarification_contract() -> None:
     )
 
     capability = clarification["parameters"]["properties"]["capability"]
-    assert capability["enum"] == ["reminder.create", "travel.plan"]
+    assert capability["enum"] == [
+        "reminder.create", "travel.plan", "business-trip.plan"
+    ]

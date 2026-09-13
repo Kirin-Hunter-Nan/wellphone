@@ -80,6 +80,7 @@ class InMemoryServerTaskStore:
             if task and task.status not in ("completed", "failed", "cancelled"):
                 task.status, task.phase, task.detail = "cancelled", "cancelled", "任务已取消"
                 task.updated_at = datetime.now(timezone.utc)
+                self._leases.pop(task_id, None)
             return task.model_copy(deep=True) if task else None
 
     async def claim(self, worker_id: str, lease_seconds: int) -> ServerTask | None:
@@ -117,7 +118,12 @@ class InMemoryServerTaskStore:
 
     async def renew(self, task_id: UUID, worker_id: str, lease_seconds: int) -> bool:
         async with self._lock:
-            if not self._owns(task_id, worker_id):
+            task = self._tasks.get(task_id)
+            if (
+                task is None
+                or task.status != "running"
+                or not self._owns(task_id, worker_id)
+            ):
                 return False
             self._leases[task_id] = (
                 worker_id,

@@ -7,11 +7,11 @@
 | 目标设备 | iPhone 12 |
 | iOS 版本 | 26.6.2 |
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
-| Swift 编译器 | Swift 6.3；工程当前 Language Mode 为 Swift 5，V0 开始前切换为 Swift 6 |
+| Swift 编译器 | Swift 6.3；工程 Language Mode 为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.2 可恢复任务运行时已于 2026-09-11 完成；下一阶段为 V0.3 多模态输入 |
+| 当前阶段 | V0.6 商务出差任务包第二阶段已完成；Gmail/Drive 真实账号发布验收与文件型输入扩展待完成 |
 | 首个真实工具 | `reminder.create` |
-| 首个完整业务任务 | 票据整理与报销报告 |
+| 首个复杂业务任务 | 商务出差任务包；票据整理与报销报告仍作为后续完整文件处理任务 |
 
 ### 1.1 已确定的兼容性决策
 
@@ -218,6 +218,7 @@ wellphone/
 │       ├── Features/Chat/
 │       ├── Features/Tasks/
 │       ├── Platform/Calendar/
+│       ├── Platform/Google/
 │       ├── Platform/Notifications/
 │       └── Resources/
 ├── shared/

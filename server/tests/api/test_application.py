@@ -50,9 +50,45 @@ def test_travel_tool_followup_points_to_task_detail_without_claiming_files() -> 
     reply = deterministic_tool_followup(submission)
 
     assert reply is not None
+    assert reply.startswith("# 上海三日行程\n\n上海三日行程已完成。")
     assert "# 上海三日行程" in reply
     assert "上海博物馆" in reply
     assert "文件" not in reply
+
+
+def test_business_trip_followup_includes_the_verified_text_artifact() -> None:
+    submission = ToolResultSubmission.model_validate({
+        "requestId": "result_business_trip",
+        "protocolVersion": "1.0",
+        "toolCallId": "call_business_trip",
+        "taskId": "39e6cc7c-2b6f-4a2c-a34d-ed2e996fe2e7",
+        "capability": "business-trip.plan",
+        "status": "verified",
+        "result": {
+            "summary": "上海商务出差计划已完成，未发现时间冲突。",
+            "artifacts": [{
+                "id": "cc37e242-41ec-4d10-a730-f69605483c24",
+                "kind": "text",
+                "title": "上海商务出差计划（文本版）",
+                "contentType": "text/markdown",
+                "payload": "# 上海商务出差计划\n\n- 14:00 客户方案会",
+                "storageReference": "https://drive.google.com/file/d/file-1/view",
+            }],
+        },
+    })
+
+    reply = deterministic_tool_followup(submission)
+
+    assert reply is not None
+    assert reply.startswith(
+        "# 上海商务出差计划\n\n"
+        "上海商务出差计划已完成，未发现时间冲突。"
+    )
+    assert "上海商务出差计划已完成" in reply
+    assert "客户方案会" in reply
+    assert "\n\n## 文件\n\n" in reply
+    assert "在 Google Drive 中打开已上传的 PDF" in reply
+    assert "https://drive.google.com/file/d/file-1/view" in reply
 
 
 class FakeProvider:

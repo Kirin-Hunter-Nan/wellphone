@@ -29,6 +29,10 @@ enum ServerTaskStateMapper {
            case .string(let destination) = input["destination"] {
             return "规划 \(destination) 旅行"
         }
+        if capability == "business-trip.plan",
+           case .string(let destination) = input["destination"] {
+            return "整理 \(destination) 商务出差"
+        }
         return "后台任务"
     }
 }

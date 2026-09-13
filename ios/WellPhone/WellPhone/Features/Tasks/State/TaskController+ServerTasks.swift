@@ -153,7 +153,7 @@ extension TaskController {
             result = cached
         } else {
             if let task = task(id: taskID) {
-                task.detail = "正在通过系统地图核对地点"
+                task.detail = deviceToolProgressText(request.toolName)
                 touchAndSave(task)
             }
             result = await deviceToolExecutor.execute(request)
@@ -166,10 +166,18 @@ extension TaskController {
         )
         pendingDeviceToolResults.removeValue(forKey: cacheKey)
         if let task = task(id: taskID), task.status.isActive {
-            task.detail = "系统地图核对完成，正在继续规划"
+            task.detail = "设备端数据处理完成，正在继续规划"
             touchAndSave(task)
         }
         return true
+    }
+
+    private func deviceToolProgressText(_ toolName: String) -> String {
+        switch toolName {
+        case "google.gmail.search": "正在手机端读取已授权的 Gmail 邮件"
+        case "google.drive.upload-text": "正在手机端上传并核对 Google Drive 文件"
+        default: "正在通过系统地图核对地点"
+        }
     }
 
     func apply(_ snapshot: ServerTaskSnapshot, to task: AgentTask) {

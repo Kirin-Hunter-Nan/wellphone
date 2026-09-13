@@ -124,7 +124,7 @@ extension TaskController {
     }
 
     func calendarWasExplicitlyRequested(for task: AgentTask) -> Bool {
-        guard task.capability == "travel.plan",
+        guard task.capability == "travel.plan" || task.capability == "business-trip.plan",
               let argumentsJSON = task.argumentsJSON,
               let data = argumentsJSON.data(using: .utf8),
               let arguments = try? JSONDecoder().decode(
