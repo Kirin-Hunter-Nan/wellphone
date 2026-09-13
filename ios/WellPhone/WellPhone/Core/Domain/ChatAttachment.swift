@@ -27,6 +27,7 @@ final class ChatAttachment {
     var originalFilename: String?
     var localPath: String?
     var remoteURL: String?
+    var extractedText: String?
     var uploadStateRawValue: String
     var byteCount: Int?
     var pixelWidth: Int?
@@ -52,6 +53,7 @@ final class ChatAttachment {
         originalFilename: String? = nil,
         localPath: String? = nil,
         remoteURL: String? = nil,
+        extractedText: String? = nil,
         uploadState: AttachmentUploadState = .selected,
         byteCount: Int? = nil,
         pixelWidth: Int? = nil,
@@ -66,6 +68,7 @@ final class ChatAttachment {
         self.originalFilename = originalFilename
         self.localPath = localPath
         self.remoteURL = remoteURL
+        self.extractedText = extractedText
         self.uploadStateRawValue = uploadState.rawValue
         self.byteCount = byteCount
         self.pixelWidth = pixelWidth

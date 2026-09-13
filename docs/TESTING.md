@@ -38,6 +38,8 @@
 - Google OAuth token 只能由官方 iOS SDK 保存在设备钥匙串；Device Tool 结果和服务端 Journal 不得包含 access/refresh token。
 - Drive 上传只能在 `uploadToDrive=true` 时发生，文件以任务 ID 幂等定位，并在完成前下载回读验证；未经验证的链接不得进入产物。
 - Drive 最终交付文件必须是手机端可直接预览的 PDF，不得上传 `.md`；聊天完成回复必须包含已验证的 Drive 链接。
+- 文件型出差凭证仅允许 PDF、TXT 与 Markdown；原文件必须保存在设备端，模型只接收本地提取的文字，并且必须把附件内容标记为不可信证据而非指令。
+- 无文字层的 PDF、超过 10 MB 的文件、单文件超过 20000 字或单条消息合计超过 24000 字时必须在发送前失败，不得提交空白或截断后未标记的凭证。
 - `addCalendarAlerts=true` 必须同时具备明确的 `addToCalendar=true`；EventKit 写入后需同时回读核对事件字段和相对提醒时间。
 - 旅行地点必须由设备端原生 MapKit 返回 `verified=true` 后才能进入最终行程；只有搜索链接或歧义候选不得冒充回查成功。
 - MapKit 可接受具备 Place ID、完整地址和高度一致名称的具体分店/场馆；泛化品牌名与多分店候选仍必须要求 Agent 细化查询。

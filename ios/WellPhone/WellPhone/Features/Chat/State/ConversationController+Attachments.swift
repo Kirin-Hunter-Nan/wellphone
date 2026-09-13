@@ -15,6 +15,23 @@ extension ConversationController {
         pendingImages.removeAll { $0.id == id }
     }
 
+    func addDocument(data: Data, filename: String, mimeType: String?) throws {
+        let document = try documentProcessor.prepareDocument(
+            from: data,
+            filename: filename,
+            mimeType: mimeType,
+            currentDocumentCount: pendingDocuments.count,
+            currentExtractedCharacterCount: pendingDocuments.reduce(0) {
+                $0 + $1.extractedText.count
+            }
+        )
+        pendingDocuments.append(document)
+    }
+
+    func removePendingDocument(id: UUID) {
+        pendingDocuments.removeAll { $0.id == id }
+    }
+
     func showAttachmentError(_ error: any Error) {
         errorMessage = error.localizedDescription
     }
@@ -29,7 +46,25 @@ extension ConversationController {
     }
 
     func makePromptMessage(_ message: ChatMessage) -> ChatPromptMessage {
-        let imageParts = attachments(for: message).compactMap {
+        let attachments = attachments(for: message)
+        let documentParts = attachments.compactMap {
+            attachment -> ChatPromptContentPart? in
+            guard attachment.kind == .pdf || attachment.kind == .file,
+                  let extractedText = attachment.extractedText,
+                  !extractedText.isEmpty else {
+                return nil
+            }
+            let filename = safeAttachmentFilename(
+                attachment.originalFilename ?? "未命名文件"
+            )
+            let evidence = safeAttachmentEvidence(extractedText)
+            return .text("""
+                <wellphone_attachment filename="\(filename)">
+                \(evidence)
+                </wellphone_attachment>
+                """)
+        }
+        let imageParts = attachments.compactMap {
             attachment -> ChatPromptContentPart? in
             guard attachment.kind == .image,
                   let path = attachment.localPath,
@@ -40,14 +75,38 @@ extension ConversationController {
                 "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
             )
         }
-        guard !imageParts.isEmpty else {
+        guard !imageParts.isEmpty || !documentParts.isEmpty else {
             return ChatPromptMessage(role: message.role, content: message.text)
         }
         var parts: [ChatPromptContentPart] = []
         if !message.text.isEmpty {
             parts.append(.text(message.text))
         }
+        parts.append(contentsOf: documentParts)
         parts.append(contentsOf: imageParts)
         return ChatPromptMessage(role: message.role, parts: parts)
+    }
+
+    private func safeAttachmentFilename(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private func safeAttachmentEvidence(_ value: String) -> String {
+        value
+            .replacingOccurrences(
+                of: "<wellphone_attachment",
+                with: "&lt;wellphone_attachment",
+                options: .caseInsensitive
+            )
+            .replacingOccurrences(
+                of: "</wellphone_attachment",
+                with: "&lt;/wellphone_attachment",
+                options: .caseInsensitive
+            )
     }
 }

@@ -18,12 +18,30 @@ struct MessageBubble: View {
                         HStack(spacing: 6) {
                             ForEach(attachments) { attachment in
                                 if let path = attachment.localPath,
+                                   attachment.kind == .image,
                                    let image = UIImage(contentsOfFile: path) {
                                     Image(uiImage: image)
                                         .resizable()
                                         .scaledToFill()
                                         .frame(width: 180, height: 150)
                                         .clipShape(RoundedRectangle(cornerRadius: 16))
+                                } else if attachment.kind == .pdf || attachment.kind == .file {
+                                    Label {
+                                        Text(attachment.originalFilename ?? "附件")
+                                            .lineLimit(2)
+                                    } icon: {
+                                        Image(systemName: attachment.kind == .pdf
+                                              ? "doc.richtext.fill"
+                                              : "doc.text.fill")
+                                    }
+                                    .font(.caption)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 10)
+                                    .frame(maxWidth: 220, minHeight: 48, alignment: .leading)
+                                    .background(
+                                        Color.secondary.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 12)
+                                    )
                                 }
                             }
                         }

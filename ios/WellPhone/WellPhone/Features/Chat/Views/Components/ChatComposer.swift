@@ -1,40 +1,30 @@
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatComposer: View {
     @Environment(ConversationController.self) private var controller
     @FocusState.Binding var isFocused: Bool
     let startVoiceConversation: () -> Void
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var isSelectingDocuments = false
 
     var body: some View {
         @Bindable var controller = controller
 
         let canSend = !controller.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !controller.pendingImages.isEmpty
+            || !controller.pendingDocuments.isEmpty
 
         return VStack(spacing: 6) {
-            if !controller.pendingImages.isEmpty {
+            if !controller.pendingImages.isEmpty || !controller.pendingDocuments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(controller.pendingImages) { image in
-                            ZStack(alignment: .topTrailing) {
-                                if let preview = UIImage(data: image.data) {
-                                    Image(uiImage: preview)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 72, height: 72)
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                                }
-                                Button {
-                                    controller.removePendingImage(id: image.id)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(.white, .black.opacity(0.65))
-                                }
-                                .offset(x: 5, y: -5)
-                            }
+                            pendingImagePreview(image)
+                        }
+                        ForEach(controller.pendingDocuments) { document in
+                            pendingDocumentPreview(document)
                         }
                     }
                     .padding(.horizontal, 4)
@@ -43,17 +33,34 @@ struct ChatComposer: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(
-                    selection: $selectedPhotoItems,
-                    maxSelectionCount: max(1, 4 - controller.pendingImages.count),
-                    matching: .images
-                ) {
-                    Image(systemName: "photo.on.rectangle")
-                        .font(.system(size: 18))
+                Menu {
+                    PhotosPicker(
+                        selection: $selectedPhotoItems,
+                        maxSelectionCount: max(1, 4 - controller.pendingImages.count),
+                        matching: .images
+                    ) {
+                        Label("选择图片", systemImage: "photo.on.rectangle")
+                    }
+                    .disabled(controller.pendingImages.count >= 4)
+
+                    Button {
+                        isSelectingDocuments = true
+                    } label: {
+                        Label("选择文件", systemImage: "doc")
+                    }
+                    .disabled(controller.pendingDocuments.count >= 3)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 19, weight: .medium))
                         .frame(width: 34, height: 36)
                 }
-                .disabled(controller.isGenerating || controller.pendingImages.count >= 4)
-                .accessibilityLabel("选择图片")
+                .disabled(
+                    controller.isGenerating
+                    || (controller.pendingImages.count >= 4
+                        && controller.pendingDocuments.count >= 3)
+                )
+                .accessibilityLabel("添加图片或文件")
+                .accessibilityIdentifier("chat.add-attachment")
 
                 TextField("给 WellPhone 发消息…", text: $controller.draft, axis: .vertical)
                 .lineLimit(1...6)
@@ -139,5 +146,84 @@ struct ChatComposer: View {
                 selectedPhotoItems = []
             }
         }
+        .fileImporter(
+            isPresented: $isSelectingDocuments,
+            allowedContentTypes: supportedDocumentTypes,
+            allowsMultipleSelection: true
+        ) { result in
+            do {
+                for url in try result.get() {
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if didAccess { url.stopAccessingSecurityScopedResource() }
+                    }
+                    let values = try? url.resourceValues(forKeys: [.contentTypeKey])
+                    try controller.addDocument(
+                        data: Data(contentsOf: url),
+                        filename: url.lastPathComponent,
+                        mimeType: values?.contentType?.preferredMIMEType
+                    )
+                }
+            } catch {
+                controller.showAttachmentError(error)
+            }
+        }
+    }
+
+    private var supportedDocumentTypes: [UTType] {
+        var types: [UTType] = [.pdf, .plainText]
+        if let markdown = UTType(filenameExtension: "md") {
+            types.append(markdown)
+        }
+        return types
+    }
+
+    @ViewBuilder
+    private func pendingImagePreview(_ image: PendingChatImage) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if let preview = UIImage(data: image.data) {
+                Image(uiImage: preview)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            removeButton {
+                controller.removePendingImage(id: image.id)
+            }
+        }
+    }
+
+    private func pendingDocumentPreview(_ document: PendingChatDocument) -> some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 5) {
+                Image(systemName: document.mimeType == "application/pdf"
+                      ? "doc.richtext.fill"
+                      : "doc.text.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
+                Text(document.filename)
+                    .font(.caption2)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(width: 92, height: 72)
+            .background(
+                Color.secondary.opacity(0.1),
+                in: RoundedRectangle(cornerRadius: 12)
+            )
+            removeButton {
+                controller.removePendingDocument(id: document.id)
+            }
+        }
+    }
+
+    private func removeButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "xmark.circle.fill")
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.65))
+        }
+        .offset(x: 5, y: -5)
     }
 }
