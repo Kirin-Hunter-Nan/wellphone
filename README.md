@@ -46,6 +46,19 @@ flowchart LR
 
 输入支持多轮文字、设备端语音转写、最多 4 张图片以及最多 3 个带文字层的 PDF/TXT/Markdown 文件。图片使用 Apple Vision 本地 OCR；扫描 PDF 没有文字层时会明确失败，需将页面作为图片选择。
 
+## 语音功能
+
+WellPhone 支持两种语音入口：点击聊天输入框的麦克风按钮，或调用系统提供的“开始语音对话” App Shortcut。系统快捷指令内置“与 WellPhone 语音对话”“打开 WellPhone 语音助手”“让 WellPhone 听我说”等短语；也可以在 **设置 → 辅助功能 → 语音快捷指令（Vocal Shortcuts）** 中为该动作录制自定义唤醒词。
+
+语音任务的实际链路如下：
+
+1. 系统快捷指令将 WellPhone 带到前台并自动打开语音会话；冷启动时，待处理的唤醒请求可在 5 分钟内恢复。
+2. App 通过 Apple `SpeechAnalyzer` / `SpeechTranscriber` 在设备端实时转写，原始麦克风音频不上传到 WellPhone 服务端。
+3. 端点检测识别到用户说完后自动结束转写并提交文字指令，不需要再点击发送。
+4. 指令提交后即可切换到其他 App；后续 Agent Loop、设备 Tool 和结果验证沿用本文所述的无界面后台执行链路。
+
+语音唤醒和录音本身需要 WellPhone 位于前台，这是 iOS 的交互与隐私边界；如果录音期间切到后台，会话会暂停，返回前台后自动继续。首次使用对应语言时，系统可能需要下载本地语音模型。
+
 ## 部署
 
 ### 环境要求
@@ -116,7 +129,7 @@ uv run --env-file .env python -m app.bootstrap.worker
 - 允许 WellPhone 发送完成通知。
 - 需要读取或写入日历时，提前授予 Apple 日历完整访问权限。
 - 使用 Gmail/Drive 时，提前登录 Google 账号并授予对应 Scope。
-- 使用语音输入时，提前允许麦克风与语音识别。
+- 使用语音输入时，提前允许麦克风，并等待首次使用所需的本地语音模型下载完成。
 
 Google 能力使用官方 Google Sign-In iOS SDK。部署到自己的 Bundle Identifier 时，需要在 Google Cloud 创建 iOS OAuth Client、启用 Gmail API 和 Google Drive API，并在 target Build Settings 中配置：
 
@@ -150,6 +163,12 @@ Gmail 只申请 `gmail.readonly`，Drive 只申请 `drive.file`。OAuth token �
 完整示例见 [`server/.env.example`](server/.env.example)。不要提交 `.env`、OAuth token、用户邮件、票据或其他真实隐私数据。
 
 ## 演示
+
+### 语音发起任务
+
+1. 点击输入框中的麦克风按钮；或先在 iOS“语音快捷指令”中绑定 WellPhone 的“开始语音对话”，再说出自定义唤醒词。
+2. 看到“我在听”后，自然说出任务。停顿后，设备端转写结果会自动发送给 Agent。
+3. 任务卡片开始显示进度后切换到其他 App；语音采集已经结束，WellPhone 在后台继续执行并在完成后发送通知。
 
 ### 核心无打扰演示
 
