@@ -64,6 +64,21 @@ extension ConversationController {
                 </wellphone_attachment>
                 """)
         }
+        let imageOCRParts = attachments.compactMap {
+            attachment -> ChatPromptContentPart? in
+            guard attachment.kind == .image,
+                  let extractedText = attachment.extractedText,
+                  !extractedText.isEmpty else {
+                return nil
+            }
+            let filename = "selected-image-\(attachment.id.uuidString.lowercased()).jpg"
+            let evidence = safeAttachmentEvidence(extractedText)
+            return .text("""
+                <wellphone_attachment filename="\(filename)" kind="image-ocr">
+                \(evidence)
+                </wellphone_attachment>
+                """)
+        }
         let imageParts = attachments.compactMap {
             attachment -> ChatPromptContentPart? in
             guard attachment.kind == .image,
@@ -75,7 +90,7 @@ extension ConversationController {
                 "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
             )
         }
-        guard !imageParts.isEmpty || !documentParts.isEmpty else {
+        guard !imageParts.isEmpty || !imageOCRParts.isEmpty || !documentParts.isEmpty else {
             return ChatPromptMessage(role: message.role, content: message.text)
         }
         var parts: [ChatPromptContentPart] = []
@@ -83,6 +98,7 @@ extension ConversationController {
             parts.append(.text(message.text))
         }
         parts.append(contentsOf: documentParts)
+        parts.append(contentsOf: imageOCRParts)
         parts.append(contentsOf: imageParts)
         return ChatPromptMessage(role: message.role, parts: parts)
     }

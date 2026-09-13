@@ -361,14 +361,38 @@ def _failure_signature(
             "code": error.get("code"),
             "message": error.get("message"),
         }
+        signature_arguments: dict[str, object] = arguments
     else:
+        issues = observation.get("issues")
         detail = {
             "status": observation.get("status"),
-            "issues": observation.get("issues"),
+            "issues": _normalized_validation_issues(issues),
         }
+        # A validation retry changes the submitted plan arguments by design.
+        # Compare its deterministic issue list instead, otherwise a model can
+        # repeat the same failed strategy until the full iteration budget is
+        # exhausted merely by rewording plan items.
+        signature_arguments = {} if isinstance(issues, list) else arguments
     return tool_name + ":" + json.dumps(
-        {"arguments": arguments, "failure": detail},
+        {"arguments": signature_arguments, "failure": detail},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _normalized_validation_issues(issues: object) -> object:
+    if not isinstance(issues, list):
+        return issues
+    normalized: list[object] = []
+    calendar_marker = " overlaps existing calendar event "
+    for issue in issues:
+        if isinstance(issue, str) and calendar_marker in issue:
+            # The model often renames a flexible item while leaving it on top
+            # of the same calendar blocker. That is the same failed strategy.
+            normalized.append(
+                "calendar_overlap:" + issue.split(calendar_marker, 1)[1]
+            )
+        else:
+            normalized.append(issue)
+    return sorted(normalized, key=str)

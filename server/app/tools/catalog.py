@@ -124,12 +124,17 @@ class ModelToolCatalog:
                 "commitment, or set searchGmail=true only when the user explicitly asks WellPhone "
                 "to search Gmail for the booking evidence. Never construct gmailQuery or require "
                 "Gmail search syntax from the user; the server derives an immutable, narrowly "
-                "scoped query from the trip. The task checks conflicts, "
+                "scoped query from the trip. Set checkCalendar=true only when the user "
+                "explicitly asks to read existing calendar events or check calendar conflicts. "
+                "The task checks conflicts, "
                 "verifies places, fills safe gaps, and creates durable artifacts. Set "
                 "addToCalendar=true only when the user explicitly requests calendar changes. "
                 "Set addCalendarAlerts=true only when the user also explicitly requests alerts. "
                 "Set uploadToDrive=true only when the user explicitly requests a Google Drive "
-                "upload; only include driveFolderId when the user supplied that exact folder ID.",
+                "upload; only include driveFolderId when the user supplied that exact folder ID. "
+                "When the user supplies receipt images or files, extract only visible receipt "
+                "facts into receipts, use CNY when the evidence uses RMB/¥, and identify each "
+                "source in sourceLabel. Never invent an amount or receipt.",
                 "server",
             ),
         }

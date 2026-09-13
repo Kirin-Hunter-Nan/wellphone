@@ -96,6 +96,7 @@ async def test_normalizes_qwen_stream_to_wellphone_protocol() -> None:
     assert "Never construct gmailQuery yourself" in (
         upstream_body["messages"][0]["content"]
     )
+    assert "Set checkCalendar=true only" in upstream_body["messages"][0]["content"]
     assert "never require the user to write after:" in (
         upstream_body["messages"][0]["content"]
     )

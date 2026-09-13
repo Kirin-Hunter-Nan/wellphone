@@ -10,13 +10,13 @@
 
 `travel_plan` 同样只是聊天阶段的意图入口，并映射为 `travel.plan` 长任务。旅行规划本身没有专属 Loop：worker 注册唯一的通用 `AgentLoopTaskHandler`，其内部使用 LangGraph `StateGraph` 的条件边在模型节点、Tool 节点与结束状态之间路由。`travel.plan` Profile 只提供系统提示词、允许使用的 Tool、循环预算、进度步骤和最终结果构建器。目前的原子 Tool 是 `places_search` 与 `itinerary_submit`；后续能力通过新增或复用 Tool、再增加轻量 Profile 接入，不需要复制一套业务循环。
 
-`business_trip_plan` 映射为 `business-trip.plan`，复用同一个 Loop 和 `places_search`，并增加 `gmail_search`、`business_trip_commitments_lock` 和 `business_trip_submit`。聊天模型可以从用户文字或图片中直接提取固定 commitments；用户以自然语言明确授权查找 Gmail 时，模型只提交 `searchGmail=true`，服务端根据目的地和出差日期确定性生成窄范围 `gmailQuery`，不要求用户或模型编写 Gmail 搜索操作符。邮件接收时间默认覆盖出发前 180 天至返程后一周，并通过目的地与订单/会议关键词收窄；不会使用会排除第三方确认邮件的 `from:me` 或 `to:me`。查询写入任务输入后不可被后台 Agent 改写，服务端通过持久化 Device Tool 队列交给 iPhone，手机使用 `gmail.readonly` 获取裁剪后的邮件字段。每项邮件中抽取的固定安排必须引用搜索结果中的 message ID，随后才可锁定。提交 Tool 确定性检查每项固定安排恰好出现一次且标题、起止时间未被修改，同时拒绝未核对的新增地点和与已有安排重叠的弹性项目。酒店入住区间不作为全天阻塞事件，避免与会议产生假冲突。若 `uploadToDrive=true`，提交 Tool 只在规划校验通过后生成确定性的 Markdown，由手机端分页渲染为支持中文的 PDF，再通过 `drive.file` 幂等上传并下载回读验证。最终产物包括结构化出差计划、文本版、冲突/待办报告和日历事件，文本产物会附带已验证的 Drive PDF 链接。
+`business_trip_plan` 映射为 `business-trip.plan`，复用同一个 Loop 和 `places_search`，并增加 Gmail、日历读取、路线与提交 Tool。聊天模型可以从用户文字、文件或已由 Apple Vision 本地 OCR 的相册图片中提取固定 commitments 和票据；用户以自然语言明确授权查找 Gmail 时，模型只提交 `searchGmail=true`，服务端根据目的地和出差日期确定性生成窄范围 `gmailQuery`，不要求用户或模型编写 Gmail 搜索操作符。手机以 `gmail.readonly` 读取正文及受支持的 PDF/ICS/文本附件，每项邮件固定安排必须引用真实 message ID 后才能锁定。`checkCalendar=true` 时，手机在明确的出差日期范围内读取忙碌日历事件；全天事件仅作背景，定时事件参与冲突检查。地点由 `places_search` 核验，每段交通再由 `routes_search` 请求手机端 `MKDirections`，提交校验拒绝缺少路线凭证或短于真实预计时长的交通。票据按发票号、订单号或商户/日期/币种/金额确定性去重并汇总。若 `uploadToDrive=true`，手机分别生成行程 PDF 和报销 PDF，以不同幂等键上传并下载回读验证。最终产物包括结构化出差计划、分段文本、冲突/待办、日历事件和报销清单，并附带所有已验证的 Drive 链接。
 
 `places_search` 默认不再依赖 Apple Maps Server token。worker 将模型 Tool Call 以 `(task_id, tool_call_id)` 幂等写入 PostgreSQL `device_tool_calls`，iPhone 的现有任务轮询在 `BGContinuedProcessingTask` 租约内领取 `mapkit.local-search`，通过无界面的 `MKLocalSearch` 查询后回传结构化结果。服务端等待该结果并把它作为原 Tool Observation 继续 Agent Loop；进程重启会复用同一待处理调用。只有目标城市匹配、候选唯一且置信度达标的结果才标记为 `verified`，`itinerary_submit` 也会再次拒绝任何未验证地点。配置 `APPLE_MAPS_TOKEN` 时，它只是在设备 90 秒未返回后的可选备用路径。
 
 服务端每轮模型决策、Tool Observation、状态更新与最终输出都写入 PostgreSQL `agent_loop_events`。worker 租约过期或进程重启后，会恢复消息与工具状态；若中断发生在模型 Tool Call 已落库而结果尚未落库之间，恢复流程会继续执行该待处理调用，而不是重新开始整项规划。
 
-旅行 Profile 最多允许 12 次模型决策，任务进度展示当前轮次与上限。LangGraph 的 recursion limit 提供第二层循环保护；相同 Tool、相同语义参数和相同错误连续出现三次时通过条件边提前结束，并被标记为不可重试失败。不同地点即使返回相同错误码也不会互相累计。Qwen 若把应为对象的顶层 Tool 参数编码成嵌套 JSON 字符串，Registry 只在首次 Schema 校验失败后尝试解包并重新校验。
+普通旅行 Profile 最多允许 12 次模型决策；商务出差完整任务允许 20 次，任务进度展示当前轮次与上限。LangGraph 的 recursion limit 提供第二层循环保护；相同 Tool、相同语义参数和相同错误连续出现三次时通过条件边提前结束，并被标记为不可重试失败。提交校验失败的签名按确定性问题归一化，不能靠改名消耗全部轮次。不同地点即使返回相同错误码也不会互相累计。Qwen 若把应为对象的顶层 Tool 参数编码成嵌套 JSON 字符串，Registry 只在首次 Schema 校验失败后尝试解包并重新校验。
 
 ```text
 Chat intent Tool -> capability -> immediate server task queue

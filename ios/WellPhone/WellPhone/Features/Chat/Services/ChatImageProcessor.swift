@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Vision
 
 protocol ChatImageProcessing {
     func prepareImage(
@@ -35,8 +36,35 @@ struct DefaultChatImageProcessor: ChatImageProcessing {
         return PendingChatImage(
             id: UUID(),
             data: normalized,
-            mimeType: "image/jpeg"
+            mimeType: "image/jpeg",
+            extractedText: recognizedText(from: renderedCGImage(normalized))
         )
+    }
+
+    private func renderedCGImage(_ data: Data) -> CGImage? {
+        UIImage(data: data)?.cgImage
+    }
+
+    private func recognizedText(from image: CGImage?) -> String? {
+        guard let image else { return nil }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        do {
+            try VNImageRequestHandler(cgImage: image).perform([request])
+        } catch {
+            // The original image remains available to the multimodal model.
+            return nil
+        }
+        guard let results = request.results else { return nil }
+        let lines: [String] = results.compactMap { observation -> String? in
+            guard let candidate = observation.topCandidates(1).first,
+                  candidate.confidence >= 0.35 else { return nil }
+            return candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+        return String(lines.joined(separator: "\n").prefix(12_000))
     }
 
     private func normalizedJPEG(_ image: UIImage) throws -> Data {

@@ -112,6 +112,7 @@ def test_business_trip_normalizes_fixed_commitments_and_calendar_consent() -> No
             }],
             "addToCalendar": True,
             "addCalendarAlerts": True,
+            "checkCalendar": True,
         }),
     )
 
@@ -119,6 +120,7 @@ def test_business_trip_normalizes_fixed_commitments_and_calendar_consent() -> No
     assert request.execution_location == "server"
     assert request.arguments["commitments"][0]["kind"] == "flight"
     assert request.arguments["addCalendarAlerts"] is True
+    assert request.arguments["checkCalendar"] is True
 
 
 def test_business_trip_uses_search_authorization_not_model_query_syntax() -> None:

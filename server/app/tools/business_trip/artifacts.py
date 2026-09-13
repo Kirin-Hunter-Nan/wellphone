@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from app.tasks.models import ArtifactDraft, ServerTask, TaskOutcome
 from app.tools.business_trip.models import BusinessTripInput
+from app.tools.business_trip.reimbursement import render_reimbursement_markdown
 
 
 def build_business_trip_outcome(
@@ -18,9 +19,12 @@ def build_business_trip_outcome(
     report = {
         "destination": requested.destination,
         "commitmentCount": len(requested.commitments),
+        "calendarEventCount": output.get("calendarEventCount", 0),
         "conflicts": conflicts,
         "checklist": output.get("checklist") or [],
         "driveFile": output.get("driveFile"),
+        "driveFiles": output.get("driveFiles") or [],
+        "reimbursement": output.get("reimbursement") or {},
     }
     drive_file = output.get("driveFile") if isinstance(output.get("driveFile"), dict) else {}
     drive_reference = (
@@ -29,38 +33,65 @@ def build_business_trip_outcome(
         else None
     )
     conflict_text = f"，发现 {len(conflicts)} 处时间冲突" if conflicts else "，未发现时间冲突"
+    reimbursement = (
+        output.get("reimbursement")
+        if isinstance(output.get("reimbursement"), dict)
+        else {}
+    )
+    receipt_count = int(reimbursement.get("receiptCount") or 0)
+    summary = (
+        f"{title}已完成，整理 {len(requested.commitments)} 项固定安排"
+        f"{conflict_text}"
+    )
+    if receipt_count:
+        summary += f"，报销清单计入 {receipt_count} 张去重票据"
+    artifacts = [
+        ArtifactDraft(
+            kind="itinerary",
+            title=title,
+            content_type="application/vnd.wellphone.business-trip+json",
+            payload=output,
+        ),
+        ArtifactDraft(
+            kind="text",
+            title=f"{title}（文本版）",
+            content_type="text/markdown",
+            payload=markdown,
+            storage_reference=drive_reference,
+        ),
+        ArtifactDraft(
+            kind="json",
+            title=f"{title}（冲突与待办）",
+            content_type="application/vnd.wellphone.business-trip-report+json",
+            payload=report,
+        ),
+        ArtifactDraft(
+            kind="json",
+            title=f"{title}（日历事件）",
+            content_type="application/vnd.wellphone.calendar-events+json",
+            payload=calendar,
+        ),
+    ]
+    if receipt_count:
+        reimbursement_drive = reimbursement.get("driveFile")
+        reimbursement_reference = (
+            reimbursement_drive.get("webViewLink")
+            if isinstance(reimbursement_drive, dict)
+            and isinstance(reimbursement_drive.get("webViewLink"), str)
+            else None
+        )
+        artifacts.append(
+            ArtifactDraft(
+                kind="json",
+                title=f"{requested.destination}出差报销清单",
+                content_type="application/vnd.wellphone.reimbursement+json",
+                payload=reimbursement,
+                storage_reference=reimbursement_reference,
+            )
+        )
     return TaskOutcome(
-        summary=(
-            f"{title}已完成，整理 {len(requested.commitments)} 项固定安排"
-            f"{conflict_text}。"
-        ),
-        artifacts=(
-            ArtifactDraft(
-                kind="itinerary",
-                title=title,
-                content_type="application/vnd.wellphone.business-trip+json",
-                payload=output,
-            ),
-            ArtifactDraft(
-                kind="text",
-                title=f"{title}（文本版）",
-                content_type="text/markdown",
-                payload=markdown,
-                storage_reference=drive_reference,
-            ),
-            ArtifactDraft(
-                kind="json",
-                title=f"{title}（冲突与待办）",
-                content_type="application/vnd.wellphone.business-trip-report+json",
-                payload=report,
-            ),
-            ArtifactDraft(
-                kind="json",
-                title=f"{title}（日历事件）",
-                content_type="application/vnd.wellphone.calendar-events+json",
-                payload=calendar,
-            ),
-        ),
+        summary=summary + "。",
+        artifacts=tuple(artifacts),
     )
 
 
@@ -111,6 +142,11 @@ def render_business_trip_markdown(
                 lines.append(f"  {location}")
             if isinstance(place, dict) and place.get("map_url"):
                 lines.append(f"  [在 Apple 地图中打开]({place['map_url']})")
+            route = item.get("route") or {}
+            if isinstance(route, dict) and route.get("mapURL"):
+                minutes = route.get("expectedTravelTimeMinutes")
+                suffix = f"（约 {minutes} 分钟）" if minutes else ""
+                lines.append(f"  [打开交通路线]({route['mapURL']}){suffix}")
             if item.get("notes"):
                 lines.append(f"  {item['notes']}")
         lines.append("")
@@ -118,6 +154,14 @@ def render_business_trip_markdown(
     if checklist:
         lines.extend(["## 出发前待办", ""])
         lines.extend(f"- [ ] {item}" for item in checklist)
+    reimbursement = output.get("reimbursement")
+    if isinstance(reimbursement, dict) and reimbursement.get("receiptCount", 0) > 0:
+        reimbursement_text = render_reimbursement_markdown(
+            reimbursement, requested
+        ).splitlines()
+        if reimbursement_text:
+            reimbursement_text[0] = "## 报销清单"
+        lines.extend(["", *reimbursement_text])
     return "\n".join(lines).strip()
 
 
@@ -138,14 +182,31 @@ def business_trip_calendar_payload(
             if start is None or end is None:
                 continue
             place = item.get("place") or {}
+            route = item.get("route") or {}
             location = (
                 place.get("formatted_address") if isinstance(place, dict) else None
             ) or item.get("location") or item.get("placeName")
+            if (
+                not location
+                and isinstance(route, dict)
+                and route.get("originName")
+                and route.get("destinationName")
+            ):
+                location = f"{route['originName']} → {route['destinationName']}"
             source = commitments.get(str(item.get("sourceCommitmentId") or ""))
             notes = str(item.get("notes") or "").strip()
             if source and source.confirmation_code:
                 notes = "\n".join(
                     value for value in (notes, f"确认号：{source.confirmation_code}") if value
+                )
+            if isinstance(route, dict) and route.get("expectedTravelTimeMinutes"):
+                notes = "\n".join(
+                    value
+                    for value in (
+                        notes,
+                        f"MapKit 预计交通时间：{route['expectedTravelTimeMinutes']} 分钟",
+                    )
+                    if value
                 )
             event: dict[str, object] = {
                 "title": item.get("name"),
@@ -154,7 +215,11 @@ def business_trip_calendar_payload(
                 "startLocal": start.astimezone(zone).strftime("%Y-%m-%dT%H:%M:%S"),
                 "endLocal": end.astimezone(zone).strftime("%Y-%m-%dT%H:%M:%S"),
                 "location": location,
-                "url": place.get("map_url") if isinstance(place, dict) else None,
+                "url": (
+                    route.get("mapURL")
+                    if isinstance(route, dict) and route.get("mapURL")
+                    else place.get("map_url") if isinstance(place, dict) else None
+                ),
                 "notes": notes or None,
             }
             if requested.add_calendar_alerts:
@@ -172,10 +237,12 @@ def business_trip_calendar_payload(
 
 def _alert_offsets(kind: str) -> list[int]:
     return {
-        "flight": [180],
+        # Calendar alarms: check-in opening plus leave-for-airport buffer.
+        "flight": [1_440, 180],
         "hotel": [120],
         "meeting": [30],
         "transport": [60],
+        "transfer": [15],
         "preparation": [30],
     }.get(kind, [30])
 

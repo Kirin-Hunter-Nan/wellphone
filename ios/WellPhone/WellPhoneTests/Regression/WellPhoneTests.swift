@@ -138,6 +138,49 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func selectedImageOCRIsIncludedAsLabeledPromptEvidence() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let controller = ConversationController(
+            modelContext: context,
+            gateway: DemoModelGateway(),
+            taskController: TaskController(modelContext: context)
+        )
+        let conversation = Conversation(title: "票据报销")
+        let message = ChatMessage(
+            conversationID: conversation.id,
+            role: .user,
+            text: "生成报销清单",
+            deliveryState: .sent
+        )
+        context.insert(conversation)
+        context.insert(message)
+        context.insert(ChatAttachment(
+            messageID: message.id,
+            conversationID: conversation.id,
+            kind: .image,
+            mimeType: "image/jpeg",
+            extractedText: "上海出租车 发票号码 001 金额 ¥86.50",
+            uploadState: .uploaded
+        ))
+        try context.save()
+
+        let prompt = controller.makePromptMessage(message)
+        guard case .parts(let parts) = prompt.content else {
+            Issue.record("Expected image OCR prompt content parts")
+            return
+        }
+
+        #expect(parts.count == 2)
+        guard case .text(let evidence) = parts[1] else {
+            Issue.record("Expected image OCR text evidence")
+            return
+        }
+        #expect(evidence.contains("kind=\"image-ocr\""))
+        #expect(evidence.contains("¥86.50"))
+    }
+
+    @Test @MainActor
     func wellPhoneStreamDecoderReadsDeltasAndCompletion() throws {
         let delta = #"data: {"type":"assistant.delta","protocolVersion":"1.0","responseId":"resp_1","text":"你好"}"#
         let completed = #"data: {"type":"response.completed","protocolVersion":"1.0","responseId":"resp_1"}"#
@@ -900,6 +943,20 @@ struct WellPhoneTests {
     }
 
     @Test @MainActor
+    func mapKitDirectionsRejectsIncompleteArgumentsBeforeNetworkAccess() async {
+        let executor = MapKitDeviceToolExecutor()
+        let result = await executor.execute(DeviceToolRequest(
+            taskId: UUID(),
+            toolCallId: "route_1",
+            toolName: "mapkit.directions",
+            arguments: [:]
+        ))
+
+        #expect(result.result == nil)
+        #expect(result.failure?.code == "invalid_mapkit_directions_arguments")
+    }
+
+    @Test @MainActor
     func googleWorkspaceToolFailsClosedWithoutOAuthConfiguration() async {
         let executor = GoogleWorkspaceDeviceToolExecutor(clientIDOverride: "")
         let result = await executor.execute(DeviceToolRequest(
@@ -914,6 +971,24 @@ struct WellPhoneTests {
 
         #expect(result.result == nil)
         #expect(result.failure?.code == "google_oauth_not_configured")
+    }
+
+    @Test @MainActor
+    func calendarDeviceToolRejectsAnOversizedRangeBeforeRequestingAccess() async {
+        let executor = CalendarEventsDeviceToolExecutor()
+        let result = await executor.execute(DeviceToolRequest(
+            taskId: UUID(),
+            toolCallId: "calendar_1",
+            toolName: "calendar.events.search",
+            arguments: [
+                "startAt": .string("2026-09-01T00:00:00+08:00"),
+                "endAt": .string("2026-10-01T00:00:00+08:00"),
+                "maxResults": .number(100),
+            ]
+        ))
+
+        #expect(result.result == nil)
+        #expect(result.failure?.code == "invalid_calendar_range")
     }
 
     @Test @MainActor

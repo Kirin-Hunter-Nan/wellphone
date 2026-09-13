@@ -7,6 +7,7 @@ struct ChatComposer: View {
     @FocusState.Binding var isFocused: Bool
     let startVoiceConversation: () -> Void
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var isSelectingPhotos = false
     @State private var isSelectingDocuments = false
 
     var body: some View {
@@ -34,11 +35,9 @@ struct ChatComposer: View {
 
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
-                    PhotosPicker(
-                        selection: $selectedPhotoItems,
-                        maxSelectionCount: max(1, 4 - controller.pendingImages.count),
-                        matching: .images
-                    ) {
+                    Button {
+                        isSelectingPhotos = true
+                    } label: {
                         Label("选择图片", systemImage: "photo.on.rectangle")
                     }
                     .disabled(controller.pendingImages.count >= 4)
@@ -131,6 +130,12 @@ struct ChatComposer: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .background(.bar)
+        .photosPicker(
+            isPresented: $isSelectingPhotos,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: max(1, 4 - controller.pendingImages.count),
+            matching: .images
+        )
         .onChange(of: selectedPhotoItems) { _, items in
             guard !items.isEmpty else { return }
             Task {

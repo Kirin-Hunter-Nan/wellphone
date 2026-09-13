@@ -47,7 +47,7 @@ def deterministic_tool_followup(submission: ToolResultSubmission) -> str | None:
     if submission.status == "verified":
         summary = f"{task_label}已经完成。"
         itinerary_text: str | None = None
-        uploaded_file: str | None = None
+        uploaded_files: list[tuple[str, str]] = []
         if submission.result:
             supplied = submission.result.get("summary")
             if isinstance(supplied, str) and supplied.strip():
@@ -64,18 +64,23 @@ def deterministic_tool_followup(submission: ToolResultSubmission) -> str | None:
                         and payload.strip()
                     ):
                         itinerary_text = payload.strip()
-                        reference = artifact.get("storageReference")
-                        if isinstance(reference, str) and reference.startswith("https://"):
-                            uploaded_file = reference
+                    reference = artifact.get("storageReference")
+                    if isinstance(reference, str) and reference.startswith("https://"):
+                        uploaded_files.append((
+                            str(artifact.get("title") or "已上传文件"), reference
+                        ))
         if itinerary_text:
             title, body = _split_markdown_title(itinerary_text, task_label)
             sections = [title, summary]
             if body:
                 sections.append(body)
-            if uploaded_file:
+            if uploaded_files:
                 sections.append(
                     "## 文件\n\n"
-                    f"[在 Google Drive 中打开已上传的 PDF]({uploaded_file})"
+                    + "\n".join(
+                        f"- [在 Google Drive 中打开已上传的 PDF：{title}]({reference})"
+                        for title, reference in uploaded_files
+                    )
                 )
             return "\n\n".join(sections)
         return (

@@ -56,12 +56,13 @@ class DeviceGoogleWorkspaceClient:
         folder_id: str | None,
         task_id: UUID | None,
         tool_call_id: str | None,
+        idempotency_key: str | None = None,
     ) -> dict[str, object]:
         arguments: dict[str, object] = {
             "name": name,
             "content": content,
             "mimeType": mime_type,
-            "idempotencyKey": str(task_id) if task_id else "",
+            "idempotencyKey": idempotency_key or (str(task_id) if task_id else ""),
         }
         if folder_id:
             arguments["folderId"] = folder_id

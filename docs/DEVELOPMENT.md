@@ -9,9 +9,9 @@
 | Xcode / SDK | Xcode 26.4 / iOS SDK 26.4 |
 | Swift 编译器 | Swift 6.3；工程 Language Mode 为 Swift 6 |
 | 最低部署版本 | iOS 26.4 |
-| 当前阶段 | V0.6 商务出差任务包第三阶段：Gmail/Drive 真实账号验收及 PDF/TXT/Markdown 文件型凭证输入已完成；扫描件 OCR 待扩展 |
+| 当前阶段 | V0.7 商务出差完整任务：Gmail 附件、Apple 日历冲突读取、MapKit 路线、相册 OCR、报销去重、双 PDF Drive 交付已实现，等待完整真机验收 |
 | 首个真实工具 | `reminder.create` |
-| 首个复杂业务任务 | 商务出差任务包；票据整理与报销报告仍作为后续完整文件处理任务 |
+| 首个复杂业务任务 | 商务出差完整任务包；固定安排、冲突、路线、票据、日历、Drive 与完成通知形成同一条可恢复执行链 |
 
 ### 1.1 已确定的兼容性决策
 
@@ -104,7 +104,7 @@ V0 不是最终 Agent，但所有消息必须使用未来可扩展的数据模�
 - Apple Vision 本地 OCR。
 - OCR 低置信度时才把必要图片交给多模态模型。
 
-当前文件输入已支持从 Files 选择带文字层的 PDF、UTF-8/Unicode TXT 与 Markdown，原件持久化在设备端，提取文字以独立的不可信附件边界进入聊天上下文。没有文字层的扫描 PDF 暂不伪装为成功，必须改用图片输入；Apple Vision OCR 与 Share Extension 留在下一阶段。
+当前文件输入已支持从 Files 选择带文字层的 PDF、UTF-8/Unicode TXT 与 Markdown，原件持久化在设备端，提取文字以独立的不可信附件边界进入聊天上下文。相册图片已使用 Apple Vision 在本地 OCR，并保留原图作为多模态证据。没有文字层的扫描 PDF 暂不伪装为成功，必须把页面作为图片选择；Share Extension 留在下一阶段。
 
 ### 3.5 V0.4：后台执行
 

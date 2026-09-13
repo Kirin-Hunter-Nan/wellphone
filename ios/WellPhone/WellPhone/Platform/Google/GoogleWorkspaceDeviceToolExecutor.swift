@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import GoogleSignIn
+import PDFKit
 import UIKit
 
 @MainActor
@@ -72,13 +73,83 @@ final class GoogleWorkspaceDeviceToolExecutor {
                 string: "https://gmail.googleapis.com/gmail/v1/users/me/messages/\(reference.id)?format=full"
             )!
             let message: GmailMessageResource = try await apiRequest(url, token: token)
-            messages.append(.object(message.normalized))
+            let attachmentEvidence = await readableAttachmentEvidence(
+                for: message,
+                token: token
+            )
+            messages.append(.object(message.normalized(
+                attachmentEvidence: attachmentEvidence
+            )))
         }
         return [
             "messages": .array(messages),
             "resultCount": .number(Double(messages.count)),
             "source": .string("gmail-api-device"),
         ]
+    }
+
+    private func readableAttachmentEvidence(
+        for message: GmailMessageResource,
+        token: String
+    ) async -> String {
+        let supportedMIMETypes = Set([
+            "application/pdf",
+            "text/calendar",
+            "application/ics",
+            "text/plain",
+        ])
+        var evidence: [String] = []
+        var characterCount = 0
+        for descriptor in (message.payload?.attachmentDescriptors ?? []).prefix(6) {
+            let mimeType = descriptor.mimeType.lowercased()
+            guard supportedMIMETypes.contains(mimeType) else { continue }
+            do {
+                let data: Data?
+                if let encoded = descriptor.inlineData {
+                    data = Data(base64URLEncoded: encoded)
+                } else if let attachmentID = descriptor.attachmentID {
+                    let url = URL(
+                        string: "https://gmail.googleapis.com/gmail/v1/users/me/messages/\(message.id)/attachments/\(attachmentID)"
+                    )!
+                    let resource: GmailAttachmentResource = try await apiRequest(
+                        url,
+                        token: token
+                    )
+                    data = resource.data.flatMap(Data.init(base64URLEncoded:))
+                } else {
+                    data = nil
+                }
+                guard let data,
+                      let text = readableText(data: data, mimeType: mimeType),
+                      !text.isEmpty else { continue }
+                let remaining = 12_000 - characterCount
+                guard remaining > 0 else { break }
+                let sanitizedFilename = descriptor.filename
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\"", with: "'")
+                let block = """
+                <gmail_attachment filename="\(sanitizedFilename)" mimeType="\(mimeType)">
+                \(String(text.prefix(remaining)))
+                </gmail_attachment>
+                """
+                evidence.append(block)
+                characterCount += block.count
+            } catch {
+                // One unreadable attachment must not hide the rest of the Gmail result.
+                continue
+            }
+        }
+        return evidence.joined(separator: "\n")
+    }
+
+    private func readableText(data: Data, mimeType: String) -> String? {
+        if mimeType == "application/pdf" {
+            guard let document = PDFDocument(data: data) else { return nil }
+            return (0..<document.pageCount)
+                .compactMap { document.page(at: $0)?.string }
+                .joined(separator: "\n")
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     private func uploadDriveText(
@@ -298,7 +369,11 @@ private struct GmailMessageList: Decodable {
 private struct GmailMessageResource: Decodable {
     struct Payload: Decodable {
         struct Header: Decodable { let name: String; let value: String }
-        struct Body: Decodable { let data: String? }
+        struct Body: Decodable {
+            let data: String?
+            let attachmentId: String?
+        }
+        let filename: String?
         let mimeType: String?
         let headers: [Header]?
         let body: Body?
@@ -310,11 +385,15 @@ private struct GmailMessageResource: Decodable {
     let snippet: String?
     let payload: Payload?
 
-    var normalized: [String: JSONValue] {
+    func normalized(attachmentEvidence: String) -> [String: JSONValue] {
         var headers: [String: String] = [:]
         for header in payload?.headers ?? [] {
             headers[header.name.lowercased()] = header.value
         }
+        let body = [payload?.plainText, attachmentEvidence]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
         return [
             "id": .string(id),
             "threadId": threadId.map(JSONValue.string) ?? .null,
@@ -322,9 +401,16 @@ private struct GmailMessageResource: Decodable {
             "sender": headers["from"].map(JSONValue.string) ?? .null,
             "date": headers["date"].map(JSONValue.string) ?? .null,
             "snippet": .string(String((snippet ?? "").prefix(2_000))),
-            "bodyText": .string(String((payload?.plainText ?? "").prefix(4_000))),
+            "bodyText": .string(String(body.prefix(16_000))),
         ]
     }
+}
+
+private struct GmailAttachmentDescriptor {
+    let filename: String
+    let mimeType: String
+    let attachmentID: String?
+    let inlineData: String?
 }
 
 private extension GmailMessageResource.Payload {
@@ -337,6 +423,26 @@ private extension GmailMessageResource.Payload {
         }
         return nil
     }
+
+    var attachmentDescriptors: [GmailAttachmentDescriptor] {
+        var values: [GmailAttachmentDescriptor] = []
+        if let filename, !filename.isEmpty, let mimeType {
+            values.append(GmailAttachmentDescriptor(
+                filename: filename,
+                mimeType: mimeType,
+                attachmentID: body?.attachmentId,
+                inlineData: body?.data
+            ))
+        }
+        for part in parts ?? [] {
+            values.append(contentsOf: part.attachmentDescriptors)
+        }
+        return values
+    }
+}
+
+private struct GmailAttachmentResource: Decodable {
+    let data: String?
 }
 
 private struct DriveFileList: Decodable { let files: [DriveFile] }

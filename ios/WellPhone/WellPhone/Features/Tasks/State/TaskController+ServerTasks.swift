@@ -176,6 +176,8 @@ extension TaskController {
         switch toolName {
         case "google.gmail.search": "正在手机端读取已授权的 Gmail 邮件"
         case "google.drive.upload-text": "正在手机端上传并核对 Google Drive 文件"
+        case "calendar.events.search": "正在手机端读取已授权的 Apple 日历事件"
+        case "mapkit.directions": "正在手机端计算真实交通路线"
         default: "正在通过系统地图核对地点"
         }
     }

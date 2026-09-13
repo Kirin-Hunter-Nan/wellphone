@@ -15,7 +15,9 @@ from app.tools.business_trip.profile import make_business_trip_profile
 from app.tools.business_trip.tools import (
     BusinessTripCommitmentsLockTool,
     BusinessTripSubmitTool,
+    CalendarEventsSearchTool,
     GmailSearchTool,
+    RoutesSearchTool,
 )
 from app.tools.travel.models import AppleMapsPlace
 from app.tools.travel.tools import PlacesSearchTool
@@ -29,10 +31,18 @@ class UnusedMaps:
             verified=True,
         )
 
+    async def directions(self, *_args, **_kwargs):
+        raise AssertionError("Routes should not be called without transfer items")
+
 
 class UnusedGoogle:
     async def search_gmail(self, *_args, **_kwargs):
         raise AssertionError("Gmail should not be called for supplied commitments")
+
+
+class UnusedCalendar:
+    async def search_events(self, *_args, **_kwargs):
+        raise AssertionError("Calendar should not be read without explicit authorization")
 
 
 class BusinessTripModel:
@@ -87,7 +97,9 @@ async def test_business_trip_completes_with_durable_artifacts(anyio_backend) -> 
             AgentLoopToolRegistry([
                 GmailSearchTool(UnusedGoogle()),  # type: ignore[arg-type]
                 BusinessTripCommitmentsLockTool(),
+                CalendarEventsSearchTool(UnusedCalendar()),  # type: ignore[arg-type]
                 PlacesSearchTool(UnusedMaps()),  # type: ignore[arg-type]
+                RoutesSearchTool(UnusedMaps()),  # type: ignore[arg-type]
                 BusinessTripSubmitTool(),
             ]),
             journal,

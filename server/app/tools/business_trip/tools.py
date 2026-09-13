@@ -1,20 +1,31 @@
-"""Atomic Gmail collection and submission tools for business-trip planning."""
+"""Atomic evidence collection and submission tools for business-trip planning."""
 
+from datetime import datetime, time, timedelta
 from pydantic import BaseModel
+from zoneinfo import ZoneInfo
 
 from app.agent.tools import LoopToolContext, LoopToolResult
 from app.tools.business_trip.models import (
     BusinessTripCommitmentsLockArguments,
     BusinessTripInput,
     BusinessTripSubmitArguments,
+    CalendarEventsSearchArguments,
     GmailSearchArguments,
 )
 from app.tools.business_trip.artifacts import render_business_trip_markdown
+from app.tools.business_trip.reimbursement import render_reimbursement_markdown
+from app.tools.business_trip.device_calendar import DeviceCalendarClient
 from app.tools.business_trip.device_google import DeviceGoogleWorkspaceClient
 from app.tools.business_trip.validation import (
     enrich_business_trip_plan,
     validate_business_trip_plan,
 )
+from app.tools.travel.device_maps import DeviceMapKitSearchClient
+from app.tools.travel.models import (
+    AppleMapsPlace,
+    RouteSearchArguments,
+)
+from app.tools.travel.validation import matching_place
 
 
 class BusinessTripSubmitTool:
@@ -49,6 +60,18 @@ class BusinessTripSubmitTool:
                     ),
                 },
             })
+        if requested.check_calendar and not isinstance(
+            context.state.get("calendarEvents"), list
+        ):
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "calendar_search_required",
+                    "message": (
+                        "任务要求检查现有日历，必须先完成 calendar_events_search。"
+                    ),
+                },
+            })
         issues = validate_business_trip_plan(values.plan, requested, context.state)
         if issues:
             return LoopToolResult({
@@ -73,9 +96,30 @@ class BusinessTripSubmitTool:
                 mime_type="application/pdf",
                 folder_id=requested.drive_folder_id,
                 task_id=context.task.id,
-                tool_call_id=f"{context.tool_call_id or 'submit'}:drive",
+                tool_call_id=f"{context.tool_call_id or 'submit'}:drive:itinerary",
+                idempotency_key=f"{context.task.id}:itinerary",
             )
             output["driveFile"] = receipt
+            drive_files = [receipt]
+            reimbursement = output.get("reimbursement")
+            if (
+                isinstance(reimbursement, dict)
+                and reimbursement.get("receiptCount", 0) > 0
+            ):
+                reimbursement_receipt = await self._google.upload_drive_text(
+                    name=f"{title}-报销清单.pdf",
+                    content=render_reimbursement_markdown(reimbursement, requested),
+                    mime_type="application/pdf",
+                    folder_id=requested.drive_folder_id,
+                    task_id=context.task.id,
+                    tool_call_id=(
+                        f"{context.tool_call_id or 'submit'}:drive:reimbursement"
+                    ),
+                    idempotency_key=f"{context.task.id}:reimbursement",
+                )
+                reimbursement["driveFile"] = reimbursement_receipt
+                drive_files.append(reimbursement_receipt)
+            output["driveFiles"] = drive_files
         return LoopToolResult(
             observation={"ok": True, "status": "accepted"},
             final_output=output,
@@ -124,11 +168,131 @@ class GmailSearchTool:
         )
 
 
+class CalendarEventsSearchTool:
+    name = "calendar_events_search"
+    description = (
+        "Read existing Apple Calendar events only when the task explicitly authorized "
+        "calendar conflict checking. The date range is fixed by the task and cannot be "
+        "changed by the model. Call this before building or submitting the itinerary."
+    )
+    arguments_model = CalendarEventsSearchArguments
+
+    def __init__(self, calendar: DeviceCalendarClient) -> None:
+        self._calendar = calendar
+
+    async def execute(
+        self, arguments: BaseModel, context: LoopToolContext
+    ) -> LoopToolResult:
+        values = CalendarEventsSearchArguments.model_validate(arguments)
+        requested = BusinessTripInput.model_validate(context.task.input)
+        if not requested.check_calendar:
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "calendar_not_authorized",
+                    "message": "任务输入没有授权读取现有日历。",
+                },
+            })
+        cached = context.state.get("calendarEvents")
+        if isinstance(cached, list):
+            return LoopToolResult({
+                "ok": True,
+                "events": cached,
+                "reused": True,
+                "timeZone": requested.time_zone,
+                "allDayEventsAreInformational": True,
+            })
+
+        zone = ZoneInfo(requested.time_zone)
+        start_at = datetime.combine(requested.start_date, time.min, tzinfo=zone)
+        end_at = datetime.combine(
+            requested.end_date + timedelta(days=1), time.min, tzinfo=zone
+        )
+        events = await self._calendar.search_events(
+            start_at,
+            end_at,
+            values.max_results,
+            task_id=context.task.id,
+            tool_call_id=context.tool_call_id,
+        )
+        dumped = []
+        for item in events:
+            value = item.model_dump(mode="json", by_alias=True)
+            value["startAt"] = item.start_at.astimezone(zone).isoformat()
+            value["endAt"] = item.end_at.astimezone(zone).isoformat()
+            dumped.append(value)
+        return LoopToolResult(
+            observation={
+                "ok": True,
+                "events": dumped,
+                "reused": False,
+                "timeZone": requested.time_zone,
+                "allDayEventsAreInformational": True,
+            },
+            state_updates={"calendarEvents": dumped},
+        )
+
+
+class RoutesSearchTool:
+    name = "routes_search"
+    description = (
+        "Calculate a real MapKit route between two places already verified by places_search. "
+        "Use it for every transfer in the business-trip plan, then copy route.id into the "
+        "transfer item's routeId and preserve both endpoint place names."
+    )
+    arguments_model = RouteSearchArguments
+
+    def __init__(self, maps: DeviceMapKitSearchClient) -> None:
+        self._maps = maps
+
+    async def execute(
+        self, arguments: BaseModel, context: LoopToolContext
+    ) -> LoopToolResult:
+        values = RouteSearchArguments.model_validate(arguments)
+        places = context.state.get("places")
+        place_values = places if isinstance(places, dict) else {}
+        origin_value = matching_place(values.origin_place_name, place_values)
+        destination_value = matching_place(values.destination_place_name, place_values)
+        if origin_value is None or origin_value.get("verified") is not True:
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "route_origin_not_verified",
+                    "message": f"请先用 places_search 核验路线起点：{values.origin_place_name}",
+                },
+            })
+        if destination_value is None or destination_value.get("verified") is not True:
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "route_destination_not_verified",
+                    "message": (
+                        f"请先用 places_search 核验路线终点：{values.destination_place_name}"
+                    ),
+                },
+            })
+        route = await self._maps.directions(
+            AppleMapsPlace.model_validate(origin_value),
+            AppleMapsPlace.model_validate(destination_value),
+            values.departure_at.isoformat(),
+            values.transport_type,
+            task_id=context.task.id,
+            tool_call_id=context.tool_call_id,
+        )
+        dumped = route.model_dump(mode="json", by_alias=True)
+        return LoopToolResult(
+            observation={"ok": True, "route": dumped},
+            state_updates={"routes": {route.id: dumped}},
+        )
+
+
 class BusinessTripCommitmentsLockTool:
     name = "business_trip_commitments_lock"
     description = (
         "Lock fixed bookings and meetings extracted from Gmail. Every commitment must cite "
-        "a sourceMessageId returned by gmail_search. Never infer missing dates or times."
+        "a sourceMessageId returned by gmail_search. Never infer missing dates or times. "
+        "Gmail can contain evidence for other trips; commitments outside the requested trip "
+        "dates are ignored deterministically."
     )
     arguments_model = BusinessTripCommitmentsLockArguments
 
@@ -145,9 +309,31 @@ class BusinessTripCommitmentsLockTool:
                     "message": "请先调用 gmail_search。",
                 },
             })
+        requested = BusinessTripInput.model_validate(context.task.input)
+        zone = ZoneInfo(requested.time_zone)
+        in_scope = [
+            item
+            for item in values.commitments
+            if requested.start_date
+            <= item.start_at.astimezone(zone).date()
+            <= requested.end_date
+        ]
+        ignored = [item.id for item in values.commitments if item not in in_scope]
+        if not in_scope:
+            return LoopToolResult({
+                "ok": False,
+                "error": {
+                    "code": "no_in_scope_commitments",
+                    "message": (
+                        "没有可锁定的行程日期内固定安排；请只提取出差日期范围内的机票、"
+                        "酒店和会议。"
+                    ),
+                    "ignoredCommitmentIds": ignored,
+                },
+            })
         missing = [
             item.id
-            for item in values.commitments
+            for item in in_scope
             if item.source_message_id is None or item.source_message_id not in messages
         ]
         if missing:
@@ -159,9 +345,8 @@ class BusinessTripCommitmentsLockTool:
                     "commitmentIds": missing,
                 },
             })
-        requested = BusinessTripInput.model_validate(context.task.input)
         candidate = requested.model_copy(
-            update={"commitments": [*requested.commitments, *values.commitments]}
+            update={"commitments": [*requested.commitments, *in_scope]}
         )
         try:
             validated = BusinessTripInput.model_validate(
@@ -176,8 +361,14 @@ class BusinessTripCommitmentsLockTool:
             item.model_dump(mode="json", by_alias=True)
             for item in validated.commitments
         ]
+        observation: dict[str, object] = {
+            "ok": True,
+            "commitmentCount": len(locked),
+        }
+        if ignored:
+            observation["ignoredOutOfScopeCommitmentIds"] = ignored
         return LoopToolResult(
-            observation={"ok": True, "commitmentCount": len(locked)},
+            observation=observation,
             state_updates={"lockedCommitments": locked},
         )
 

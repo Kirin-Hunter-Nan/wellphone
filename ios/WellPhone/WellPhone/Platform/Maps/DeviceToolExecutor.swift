@@ -9,6 +9,9 @@ protocol DeviceToolExecuting: Sendable {
 @MainActor
 final class MapKitDeviceToolExecutor: DeviceToolExecuting {
     func execute(_ request: DeviceToolRequest) async -> DeviceToolExecutionResult {
+        if request.toolName == "mapkit.directions" {
+            return await executeDirections(request.arguments)
+        }
         guard request.toolName == "mapkit.local-search" else {
             return .failed(
                 code: "unsupported_device_tool",
@@ -34,6 +37,136 @@ final class MapKitDeviceToolExecutor: DeviceToolExecuting {
                 message: "系统地图回查失败：\(error.localizedDescription)"
             )
         }
+    }
+
+    private func executeDirections(
+        _ arguments: [String: JSONValue]
+    ) async -> DeviceToolExecutionResult {
+        guard let originName = stringValue(arguments["originName"]),
+              let originLatitude = numberValue(arguments["originLatitude"]),
+              let originLongitude = numberValue(arguments["originLongitude"]),
+              let destinationName = stringValue(arguments["destinationName"]),
+              let destinationLatitude = numberValue(arguments["destinationLatitude"]),
+              let destinationLongitude = numberValue(arguments["destinationLongitude"]),
+              let departureValue = stringValue(arguments["departureAt"]),
+              let departureAt = ISO8601DateFormatter().date(from: departureValue),
+              let transportType = stringValue(arguments["transportType"]),
+              let mapKitTransportType = mapKitTransportType(transportType) else {
+            return .failed(
+                code: "invalid_mapkit_directions_arguments",
+                message: "MapKit 路线计算缺少有效的起点、终点、出发时间或交通方式。"
+            )
+        }
+
+        let origin = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(
+            latitude: originLatitude,
+            longitude: originLongitude
+        )))
+        origin.name = originName
+        let destination = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(
+            latitude: destinationLatitude,
+            longitude: destinationLongitude
+        )))
+        destination.name = destinationName
+
+        let directionsRequest = MKDirections.Request()
+        directionsRequest.source = origin
+        directionsRequest.destination = destination
+        directionsRequest.departureDate = departureAt
+        directionsRequest.transportType = mapKitTransportType
+
+        do {
+            let response = try await MKDirections(request: directionsRequest).calculate()
+            guard let route = response.routes.min(by: {
+                $0.expectedTravelTime < $1.expectedTravelTime
+            }) else {
+                return .failed(
+                    code: "mapkit_route_not_found",
+                    message: "Apple 地图没有找到可用交通路线。"
+                )
+            }
+            let formatter = ISO8601DateFormatter()
+            let expectedArrivalAt = departureAt.addingTimeInterval(route.expectedTravelTime)
+            return .completed([
+                "id": .string("route-\(UUID().uuidString.lowercased())"),
+                "originName": .string(originName),
+                "destinationName": .string(destinationName),
+                "transportType": .string(transportType),
+                "distanceMeters": .number(route.distance),
+                "expectedTravelTimeMinutes": .number(
+                    max(1, ceil(route.expectedTravelTime / 60))
+                ),
+                "departureAt": .string(formatter.string(from: departureAt)),
+                "expectedArrivalAt": .string(formatter.string(from: expectedArrivalAt)),
+                "mapURL": .string(directionsURL(
+                    originName: originName,
+                    originLatitude: originLatitude,
+                    originLongitude: originLongitude,
+                    destinationName: destinationName,
+                    destinationLatitude: destinationLatitude,
+                    destinationLongitude: destinationLongitude,
+                    transportType: transportType
+                ).absoluteString),
+                "source": .string("mapkit-native"),
+            ])
+        } catch {
+            return .failed(
+                code: mapKitErrorCode(error),
+                message: "系统地图路线计算失败：\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func stringValue(_ value: JSONValue?) -> String? {
+        guard case .string(let string) = value,
+              !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return string
+    }
+
+    private func numberValue(_ value: JSONValue?) -> Double? {
+        guard case .number(let number) = value, number.isFinite else { return nil }
+        return number
+    }
+
+    private func mapKitTransportType(_ value: String) -> MKDirectionsTransportType? {
+        switch value {
+        case "automobile": .automobile
+        case "transit": .transit
+        case "walking": .walking
+        default: nil
+        }
+    }
+
+    private func directionsURL(
+        originName: String,
+        originLatitude: Double,
+        originLongitude: Double,
+        destinationName: String,
+        destinationLatitude: Double,
+        destinationLongitude: Double,
+        transportType: String
+    ) -> URL {
+        let directionFlag: String
+        switch transportType {
+        case "walking": directionFlag = "w"
+        case "transit": directionFlag = "r"
+        default: directionFlag = "d"
+        }
+        var components = URLComponents(string: "https://maps.apple.com/")!
+        components.queryItems = [
+            URLQueryItem(
+                name: "saddr",
+                value: "\(originName)@\(originLatitude),\(originLongitude)"
+            ),
+            URLQueryItem(
+                name: "daddr",
+                value: "\(destinationName)@\(destinationLatitude),\(destinationLongitude)"
+            ),
+            URLQueryItem(name: "dirflg", value: directionFlag),
+        ]
+        return components.url!
     }
 
     private func search(query: String, destination: String) async throws -> [MKMapItem] {
@@ -251,13 +384,17 @@ final class MapKitDeviceToolExecutor: DeviceToolExecuting {
 final class WellPhoneDeviceToolExecutor: DeviceToolExecuting {
     private let mapKit = MapKitDeviceToolExecutor()
     private let google = GoogleWorkspaceDeviceToolExecutor()
+    private let calendar = CalendarEventsDeviceToolExecutor()
 
     func execute(_ request: DeviceToolRequest) async -> DeviceToolExecutionResult {
-        if request.toolName == "mapkit.local-search" {
+        if request.toolName.hasPrefix("mapkit.") {
             return await mapKit.execute(request)
         }
         if request.toolName.hasPrefix("google.") {
             return await google.execute(request)
+        }
+        if request.toolName == "calendar.events.search" {
+            return await calendar.execute(request)
         }
         return .failed(
             code: "unsupported_device_tool",

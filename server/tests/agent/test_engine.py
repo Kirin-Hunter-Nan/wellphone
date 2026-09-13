@@ -369,3 +369,32 @@ async def test_identical_failures_stop_at_configured_threshold(
 
     assert model.call_count == 2
     assert len(tool.calls) == 2
+
+
+async def test_equal_validation_issues_ignore_revised_plan_arguments(
+    anyio_backend,
+) -> None:
+    validation_failure = LoopToolResult({
+        "ok": False,
+        "status": "needs_revision",
+        "issues": ["meal overlaps existing calendar event team sync"],
+    })
+    reworded_validation_failure = LoopToolResult({
+        "ok": False,
+        "status": "needs_revision",
+        "issues": ["lunch break overlaps existing calendar event team sync"],
+    })
+    model = ScriptedModel([
+        tool_turn(("call-1", "first plan")),
+        tool_turn(("call-2", "reworded plan")),
+    ])
+    tool = RecordingTool([validation_failure, reworded_validation_failure])
+
+    with pytest.raises(AgentLoopRepeatedFailure):
+        await AgentLoopEngine(
+            model, AgentLoopToolRegistry([tool]), InMemoryAgentLoopJournal()
+        ).run(
+            task(), profile(max_identical_failures=2), no_op_report
+        )
+
+    assert model.call_count == 2

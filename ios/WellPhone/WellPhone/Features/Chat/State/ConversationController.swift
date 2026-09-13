@@ -79,6 +79,7 @@ final class ConversationController {
                     kind: .image,
                     mimeType: image.mimeType,
                     localPath: path,
+                    extractedText: image.extractedText,
                     uploadState: .uploaded,
                     byteCount: image.data.count
                 ))

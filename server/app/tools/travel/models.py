@@ -1,9 +1,16 @@
-"""Travel task input and itinerary schemas."""
+"""Travel task input, place, route, and itinerary schemas."""
 
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class TravelPlanInput(BaseModel):
@@ -53,6 +60,46 @@ class PlacesSearchArguments(BaseModel):
     query: str = Field(min_length=1, max_length=200)
     destination: str = Field(min_length=1, max_length=200)
     language: str = Field(default="zh-CN", min_length=2, max_length=20)
+
+
+class RouteSearchArguments(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    origin_place_name: str = Field(alias="originPlaceName", min_length=1, max_length=300)
+    destination_place_name: str = Field(
+        alias="destinationPlaceName", min_length=1, max_length=300
+    )
+    departure_at: AwareDatetime = Field(alias="departureAt")
+    transport_type: Literal["automobile", "transit", "walking"] = Field(
+        default="automobile", alias="transportType"
+    )
+
+
+class AppleMapsRoute(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=500)
+    origin_name: str = Field(alias="originName", min_length=1, max_length=300)
+    destination_name: str = Field(
+        alias="destinationName", min_length=1, max_length=300
+    )
+    transport_type: Literal["automobile", "transit", "walking"] = Field(
+        alias="transportType"
+    )
+    distance_meters: float = Field(alias="distanceMeters", ge=0)
+    expected_travel_time_minutes: int = Field(
+        alias="expectedTravelTimeMinutes", ge=1, le=1_440
+    )
+    departure_at: AwareDatetime = Field(alias="departureAt")
+    expected_arrival_at: AwareDatetime = Field(alias="expectedArrivalAt")
+    map_url: str = Field(alias="mapURL", min_length=1, max_length=2_000)
+    source: str = Field(default="mapkit-directions", max_length=100)
+
+    @model_validator(mode="after")
+    def validate_route_interval(self) -> "AppleMapsRoute":
+        if self.expected_arrival_at <= self.departure_at:
+            raise ValueError("expectedArrivalAt must be after departureAt")
+        return self
 
 
 class TravelPlanItem(BaseModel):

@@ -4,6 +4,7 @@ struct PendingChatImage: Identifiable {
     let id: UUID
     let data: Data
     let mimeType: String
+    let extractedText: String?
 }
 
 struct PendingChatDocument: Identifiable {

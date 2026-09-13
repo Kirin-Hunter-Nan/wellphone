@@ -1,6 +1,100 @@
 import EventKit
 import Foundation
 
+@MainActor
+final class CalendarEventsDeviceToolExecutor: DeviceToolExecuting {
+    private let store = EKEventStore()
+
+    func execute(_ request: DeviceToolRequest) async -> DeviceToolExecutionResult {
+        guard request.toolName == "calendar.events.search" else {
+            return .failed(
+                code: "unsupported_calendar_tool",
+                message: "日历不支持设备工具：\(request.toolName)"
+            )
+        }
+        guard case .string(let startValue) = request.arguments["startAt"],
+              case .string(let endValue) = request.arguments["endAt"] else {
+            return .failed(
+                code: "invalid_calendar_arguments",
+                message: "日历读取缺少开始或结束时间。"
+            )
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let start = formatter.date(from: startValue),
+              let end = formatter.date(from: endValue),
+              end > start,
+              end.timeIntervalSince(start) <= 15 * 86_400 else {
+            return .failed(
+                code: "invalid_calendar_range",
+                message: "日历读取范围无效或超过 15 天。"
+            )
+        }
+        let maxResults: Int
+        if case .number(let value) = request.arguments["maxResults"] {
+            maxResults = min(max(Int(value), 1), 200)
+        } else {
+            maxResults = 100
+        }
+
+        do {
+            guard try await store.requestFullAccessToEvents() else {
+                return .failed(
+                    code: "calendar_access_denied",
+                    message: "没有获得读取 Apple 日历的权限。"
+                )
+            }
+            let predicate = store.predicateForEvents(
+                withStart: start,
+                end: end,
+                calendars: nil
+            )
+            let events = store.events(matching: predicate)
+                .filter { $0.status != .canceled && $0.availability != .free }
+                .sorted {
+                    if $0.startDate == $1.startDate {
+                        return ($0.title ?? "") < ($1.title ?? "")
+                    }
+                    return $0.startDate < $1.startDate
+                }
+                .prefix(maxResults)
+                .enumerated()
+                .map { index, event -> JSONValue in
+                    let eventStart = formatter.string(from: event.startDate)
+                    let eventEnd = formatter.string(from: event.endDate)
+                    let identifier = event.eventIdentifier
+                        ?? "calendar-event-\(index)-\(eventStart)"
+                    let title = event.title?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    var value: [String: JSONValue] = [
+                        "id": .string("\(identifier)#\(eventStart)"),
+                        "title": .string(title.isEmpty ? "（无标题日历事件）" : title),
+                        "startAt": .string(eventStart),
+                        "endAt": .string(eventEnd),
+                        "calendarTitle": .string(event.calendar.title),
+                        "isAllDay": .bool(event.isAllDay),
+                    ]
+                    if let location = event.location?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                       !location.isEmpty {
+                        value["location"] = .string(location)
+                    }
+                    return .object(value)
+                }
+            return .completed([
+                "events": .array(Array(events)),
+                "resultCount": .number(Double(events.count)),
+                "source": .string("eventkit-device"),
+            ])
+        } catch {
+            return .failed(
+                code: "calendar_read_failed",
+                message: "读取 Apple 日历失败：\(error.localizedDescription)"
+            )
+        }
+    }
+}
+
 private struct TravelCalendarPayload: Decodable {
     struct Event: Decodable {
         let title: String
