@@ -219,6 +219,39 @@ def test_validation_preserves_fixed_items_and_rejects_flexible_overlap() -> None
     assert any("overlaps" in issue for issue in issues)
 
 
+def test_transfer_overlap_explains_how_to_escape_an_impossible_fixed_conflict() -> None:
+    requested = trip_input()
+    current = plan(days=[{
+        "date": "2026-10-01",
+        "theme": "客户会议",
+        "items": [
+            {
+                "kind": "transfer",
+                "name": "前往机场",
+                "startAt": "2026-10-01T13:30:00+08:00",
+                "endAt": "2026-10-01T14:01:00+08:00",
+                "routeId": "route-airport",
+                "originPlaceName": "上海市区",
+                "destinationPlaceName": "上海虹桥国际机场",
+            },
+            {
+                "kind": "fixed",
+                "name": "客户方案会",
+                "startAt": "2026-10-01T14:00:00+08:00",
+                "endAt": "2026-10-01T15:00:00+08:00",
+                "sourceCommitmentId": "meeting-1",
+                "location": "上海国际会议中心",
+            },
+        ],
+    }])
+
+    issues = validate_business_trip_plan(current, requested, {})
+
+    overlap = next(issue for issue in issues if issue.startswith("前往机场 overlaps"))
+    assert "rerun routes_search with an earlier departureAt" in overlap
+    assert "omit this transfer" in overlap
+
+
 def test_fixed_ambiguous_place_falls_back_to_source_location() -> None:
     requested = trip_input(commitments=[{
         "id": "meeting-ifc",

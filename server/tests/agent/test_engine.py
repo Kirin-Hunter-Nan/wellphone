@@ -371,6 +371,37 @@ async def test_identical_failures_stop_at_configured_threshold(
     assert len(tool.calls) == 2
 
 
+async def test_alternating_failures_still_detect_a_repeated_strategy(
+    anyio_backend,
+) -> None:
+    first_failure = LoopToolResult({
+        "ok": False,
+        "status": "needs_revision",
+        "issues": ["airport transfer overlaps fixed meeting"],
+    })
+    second_failure = LoopToolResult({
+        "ok": False,
+        "status": "needs_revision",
+        "issues": ["airport transfer must start at route departureAt"],
+    })
+    model = ScriptedModel([
+        tool_turn(("call-1", "first strategy")),
+        tool_turn(("call-2", "second strategy")),
+        tool_turn(("call-3", "first strategy again")),
+    ])
+    tool = RecordingTool([first_failure, second_failure, first_failure])
+
+    with pytest.raises(AgentLoopRepeatedFailure):
+        await AgentLoopEngine(
+            model, AgentLoopToolRegistry([tool]), InMemoryAgentLoopJournal()
+        ).run(
+            task(), profile(max_iterations=4, max_identical_failures=2), no_op_report
+        )
+
+    assert model.call_count == 3
+    assert len(tool.calls) == 3
+
+
 async def test_equal_validation_issues_ignore_revised_plan_arguments(
     anyio_backend,
 ) -> None:

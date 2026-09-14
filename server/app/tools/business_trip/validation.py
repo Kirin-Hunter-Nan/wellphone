@@ -237,7 +237,16 @@ def _validate_flexible_overlaps(
             if second.start_at >= first.end_at:
                 break
             if first.kind != "fixed" or second.kind != "fixed":
-                issues.append(f"{first.name} overlaps {second.name}")
+                issue = f"{first.name} overlaps {second.name}"
+                flexible = first if first.kind != "fixed" else second
+                fixed = second if first.kind != "fixed" else first
+                if flexible.kind == "transfer" and fixed.kind == "fixed":
+                    issue += (
+                        "; rerun routes_search with an earlier departureAt that finishes "
+                        "before the fixed item, or omit this transfer when fixed conflicts "
+                        "leave no feasible slot"
+                    )
+                issues.append(issue)
     return issues
 
 

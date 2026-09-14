@@ -25,6 +25,7 @@ class AgentGraphState(TypedDict):
     tool_call_count: int
     failure_signature: str | None
     identical_failure_count: int
+    failure_counts: dict[str, int]
     final_output: dict[str, object] | None
     stop_reason: Literal["budget", "repeated_failure"] | None
 
@@ -36,6 +37,7 @@ class ToolBatchOutcome:
     executed_count: int
     failure_signature: str | None
     identical_failure_count: int
+    failure_counts: dict[str, int]
     final_output: dict[str, object] | None = None
     repeated_failure: bool = False
 
@@ -130,6 +132,7 @@ class AgentLoopEngine:
                 completed_tool_calls=current["tool_call_count"],
                 failure_signature=current["failure_signature"],
                 identical_failure_count=current["identical_failure_count"],
+                failure_counts=current["failure_counts"],
                 report=report,
             )
             return {
@@ -139,6 +142,7 @@ class AgentLoopEngine:
                 "tool_call_count": current["tool_call_count"] + batch.executed_count,
                 "failure_signature": batch.failure_signature,
                 "identical_failure_count": batch.identical_failure_count,
+                "failure_counts": batch.failure_counts,
                 "final_output": batch.final_output,
                 "stop_reason": "repeated_failure" if batch.repeated_failure else None,
             }
@@ -168,7 +172,7 @@ class AgentLoopEngine:
             return await self._finalize(task, profile, final_output, report)
         if result.get("stop_reason") == "repeated_failure":
             raise AgentLoopRepeatedFailure(
-                "Agent 连续收到相同的 Tool 错误，任务已提前停止"
+                "Agent 反复收到相同的 Tool 错误，任务已提前停止"
             )
         raise AgentLoopBudgetExceeded(
             f"Agent 达到最多 {profile.max_iterations} 轮，仍未生成有效结果"
@@ -183,6 +187,7 @@ class AgentLoopEngine:
         tool_call_count = 0
         failure_signature: str | None = None
         identical_failure_count = 0
+        failure_counts: dict[str, int] = {}
         final_output: dict[str, object] | None = None
         for event in await self._journal.load(task.id):
             message = event.payload.get("message")
@@ -204,10 +209,11 @@ class AgentLoopEngine:
                 )
                 if current_signature is None:
                     failure_signature, identical_failure_count = None, 0
-                elif current_signature == failure_signature:
-                    identical_failure_count += 1
+                    failure_counts.clear()
                 else:
-                    failure_signature, identical_failure_count = current_signature, 1
+                    failure_signature = current_signature
+                    identical_failure_count = failure_counts.get(current_signature, 0) + 1
+                    failure_counts[current_signature] = identical_failure_count
             persisted_final = event.payload.get("finalOutput")
             if isinstance(persisted_final, dict):
                 final_output = persisted_final
@@ -219,6 +225,7 @@ class AgentLoopEngine:
             tool_call_count=tool_call_count,
             failure_signature=failure_signature,
             identical_failure_count=identical_failure_count,
+            failure_counts=failure_counts,
             final_output=final_output,
             stop_reason=None,
         )
@@ -234,9 +241,11 @@ class AgentLoopEngine:
         completed_tool_calls: int,
         failure_signature: str | None,
         identical_failure_count: int,
+        failure_counts: dict[str, int],
         report: ProgressReporter,
     ) -> ToolBatchOutcome:
         executed_count = 0
+        failure_counts = dict(failure_counts)
         for offset, call in enumerate(calls):
             if completed_tool_calls + offset >= profile.max_tool_calls:
                 break
@@ -276,26 +285,30 @@ class AgentLoopEngine:
             )
             if current_signature is None:
                 failure_signature, identical_failure_count = None, 0
-            elif current_signature == failure_signature:
-                identical_failure_count += 1
+                failure_counts.clear()
             else:
-                failure_signature, identical_failure_count = current_signature, 1
+                failure_signature = current_signature
+                identical_failure_count = failure_counts.get(current_signature, 0) + 1
+                failure_counts[current_signature] = identical_failure_count
 
             if result.final_output is not None:
                 return ToolBatchOutcome(
                     messages, context.state, executed_count,
                     failure_signature, identical_failure_count,
+                    failure_counts,
                     final_output=result.final_output,
                 )
             if identical_failure_count >= profile.max_identical_failures:
                 return ToolBatchOutcome(
                     messages, context.state, executed_count,
                     failure_signature, identical_failure_count,
+                    failure_counts,
                     repeated_failure=True,
                 )
         return ToolBatchOutcome(
             messages, context.state, executed_count,
             failure_signature, identical_failure_count,
+            failure_counts,
         )
 
     @staticmethod

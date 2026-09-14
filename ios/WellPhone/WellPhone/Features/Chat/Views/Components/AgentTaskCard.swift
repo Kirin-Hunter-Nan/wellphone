@@ -57,7 +57,8 @@ struct AgentTaskCard: View {
                 .font(.subheadline)
             }
 
-            if let detail = task.detail {
+            if let detail = task.detail,
+               task.status != .failed || detail != task.errorMessage {
                 Text(detail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
